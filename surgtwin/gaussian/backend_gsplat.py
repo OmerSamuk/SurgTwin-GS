@@ -18,11 +18,12 @@ class GsplatBackend(RendererBackend):
     def _verify_metric_depth(self, gaussians: Dict[str, torch.Tensor]) -> bool:
         try:
             import gsplat
+
             means = torch.tensor([[[0.0, 0.0, 2.0]]], dtype=torch.float32, device=gaussians["means"].device)
             quats = torch.tensor([[[1.0, 0.0, 0.0, 0.0]]], dtype=torch.float32, device=gaussians["means"].device)
             scales = torch.tensor([[[0.01, 0.01, 0.01]]], dtype=torch.float32, device=gaussians["means"].device)
             opacities = torch.tensor([[1.0]], dtype=torch.float32, device=gaussians["means"].device)
-            colors = torch.tensor([[[0.5, 0.5, 0.5, 0.5]]], dtype=torch.float32, device=gaussians["means"].device)
+            colors = torch.tensor([[[0.5, 0.5, 0.5]]], dtype=torch.float32, device=gaussians["means"].device)
 
             K = torch.eye(3, dtype=torch.float32, device=gaussians["means"].device).unsqueeze(0)
             K[0, 0, 0] = 100.0
@@ -45,11 +46,12 @@ class GsplatBackend(RendererBackend):
                 render_mode="RGB+D",
             )
 
-            rendered = result[0]
-            if rendered.shape[-1] < 5:
+            render_colors, render_alphas, meta = result
+
+            if render_colors.shape[-1] < 4:
                 return False
 
-            depth_channel = rendered[0, :, :, 4]
+            depth_channel = render_colors[0, :, :, 3]
             valid = (depth_channel > 0) & torch.isfinite(depth_channel)
             if valid.sum() < 10:
                 return False
@@ -80,17 +82,13 @@ class GsplatBackend(RendererBackend):
         viewmat = w2c[:3, :4].unsqueeze(0)
         K_batch = K.unsqueeze(0)
 
-        colors_premul = torch.cat(
-            [gaussians["colors"], torch.ones_like(gaussians["colors"][:, :1])], dim=-1
-        )
-
         try:
             result = gsplat.rasterization(
                 means=gaussians["means"].unsqueeze(0),
                 quats=gaussians["quats"].unsqueeze(0),
                 scales=gaussians["scales"].unsqueeze(0),
                 opacities=torch.sigmoid(gaussians["opacities"]).unsqueeze(0),
-                colors=colors_premul.unsqueeze(0),
+                colors=gaussians["colors"].unsqueeze(0),
                 viewmats=viewmat,
                 Ks=K_batch,
                 width=image_width,
@@ -100,18 +98,23 @@ class GsplatBackend(RendererBackend):
         except Exception as e:
             raise RuntimeError(f"gsplat rasterization failed: {e}")
 
-        rendered = result[0]
-        rgb = rendered[0, :, :, :3].clamp(0.0, 1.0)
-        alpha = rendered[0, :, :, 3:4]
+        render_colors, render_alphas, meta = result
+
+        rgb = render_colors[0, :, :, :3].clamp(0.0, 1.0)
+        alpha = render_alphas[0, :, :, 0].clamp(0.0, 1.0)
+
         depth: Optional[torch.Tensor] = None
         depth_semantics = "unavailable"
 
-        if render_depth and rendered.shape[-1] >= 5 and self._depth_is_metric:
-            depth = rendered[0, :, :, 4]
-            depth_semantics = "metric_meters"
-        elif render_depth and rendered.shape[-1] >= 5:
-            depth = rendered[0, :, :, 4]
-            depth_semantics = "relative_unaligned"
+        if render_depth and render_colors.shape[-1] >= 4:
+            depth_candidate = render_colors[0, :, :, 3]
+
+            if self._depth_is_metric:
+                depth = depth_candidate
+                depth_semantics = "metric_meters"
+            else:
+                depth = depth_candidate
+                depth_semantics = "relative_unaligned"
 
         aux = {
             "backend": "gsplat",
@@ -126,6 +129,6 @@ class GsplatBackend(RendererBackend):
         return RenderOutput(
             rgb=rgb,
             depth=depth,
-            alpha=alpha.squeeze(-1),
+            alpha=alpha,
             aux=aux,
         )
