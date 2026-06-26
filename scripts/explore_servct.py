@@ -3,6 +3,8 @@ import json
 import sys
 from pathlib import Path
 
+import cv2
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from surgtwin.data.servct_calibration import parse_rectified_calibration, rectified_to_camera_data
@@ -52,6 +54,11 @@ def main():
             left_depth = gt_dir / "DepthL" / f"{frame_name}.png"
             right_depth = gt_dir / "DepthR" / f"{frame_name}.png"
 
+            img = cv2.imread(str(left_rgb))
+            if img is None:
+                raise FileNotFoundError(f"Failed to read left RGB image: {left_rgb}")
+            height, width = img.shape[:2]
+
             calib_json = calib_dir / "Calibration.json"
             calib_alt = calib_dir / f"{frame_name}.json"
             if calib_json.exists():
@@ -65,7 +72,6 @@ def main():
                 calib_path = calib_path[0]
 
             P1, P2, Q = parse_rectified_calibration(calib_path)
-            height, width = 576, 720
             cam_data = rectified_to_camera_data(P1, P2, Q, height, width)
 
             entry = {

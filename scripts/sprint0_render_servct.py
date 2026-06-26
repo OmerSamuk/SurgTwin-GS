@@ -25,6 +25,12 @@ def main():
     parser.add_argument("--output_dir", type=str, default="outputs/debug/sprint0_render")
     args = parser.parse_args()
 
+    if not torch.cuda.is_available():
+        raise RuntimeError(
+            "CUDA is required for Sprint 0 gsplat rendering. "
+            "Check NVIDIA driver, CUDA runtime, PyTorch CUDA build, and GPU availability."
+        )
+
     manifest_path = Path(args.manifest)
     entries = load_manifest(manifest_path)
     entry = get_sample_by_index(entries, args.sample_index)
@@ -62,11 +68,7 @@ def main():
     )
 
     backend = GsplatBackend()
-    if not torch.cuda.is_available():
-        print("Warning: CUDA not available. gsplat may fail on CPU.")
-        gpu_name = "N/A"
-    else:
-        gpu_name = torch.cuda.get_device_name(0)
+    gpu_name = torch.cuda.get_device_name(0)
 
     torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
@@ -81,7 +83,7 @@ def main():
     )
 
     render_time = time.time() - t0
-    vram_allocated = torch.cuda.max_memory_allocated() / 1024**3 if torch.cuda.is_available() else 0.0
+    vram_allocated = torch.cuda.max_memory_allocated() / 1024**3
 
     rgb_out = (output.rgb.cpu().numpy() * 255).astype(np.uint8)
     rgb_bgr = cv2.cvtColor(rgb_out, cv2.COLOR_RGB2BGR)
@@ -89,8 +91,11 @@ def main():
 
     if output.depth is not None:
         depth_np = output.depth.cpu().numpy()
-        d_min, d_max = depth_np[depth_np > 0].min(), depth_np.max()
-        depth_viz = np.clip((depth_np - d_min) / (d_max - d_min + 1e-8), 0, 1)
+        if depth_np[depth_np > 0].size > 0:
+            d_min, d_max = depth_np[depth_np > 0].min(), depth_np.max()
+            depth_viz = np.clip((depth_np - d_min) / (d_max - d_min + 1e-8), 0, 1)
+        else:
+            depth_viz = np.zeros_like(depth_np)
         depth_viz = (depth_viz * 255).astype(np.uint8)
         depth_viz = cv2.applyColorMap(depth_viz, cv2.COLORMAP_JET)
         cv2.imwrite(str(out_dir / "render_depth_color.png"), depth_viz)
@@ -109,6 +114,7 @@ def main():
         "render_time_s": round(render_time, 4),
         "depth_semantics": output.aux["depth_semantics"],
         "metric_depth_available": output.aux["supports_metric_depth"],
+        "metric_depth_verified": output.aux.get("metric_depth_verified", False),
     }
 
     with open(out_dir / "render_report.json", "w") as f:
