@@ -25,13 +25,13 @@ class GsplatBackend(RendererBackend):
             opacities = torch.tensor([[1.0]], dtype=torch.float32, device=gaussians["means"].device)
             colors = torch.tensor([[[0.5, 0.5, 0.5]]], dtype=torch.float32, device=gaussians["means"].device)
 
-            K = torch.eye(3, dtype=torch.float32, device=gaussians["means"].device).unsqueeze(0)
-            K[0, 0, 0] = 100.0
-            K[0, 1, 1] = 100.0
-            K[0, 0, 2] = 50.0
-            K[0, 1, 2] = 50.0
+            K = torch.eye(3, dtype=torch.float32, device=gaussians["means"].device)[None, None]
+            K[0, 0, 0, 0] = 100.0
+            K[0, 0, 1, 1] = 100.0
+            K[0, 0, 0, 2] = 50.0
+            K[0, 0, 1, 2] = 50.0
 
-            viewmat = torch.eye(4, dtype=torch.float32, device=gaussians["means"].device)[:3, :4].unsqueeze(0)
+            viewmat = torch.eye(4, dtype=torch.float32, device=gaussians["means"].device)[None, None]
 
             result = gsplat.rasterization(
                 means=means,
@@ -79,8 +79,8 @@ class GsplatBackend(RendererBackend):
         K = camera.K.to(dtype=torch.float32, device=gaussians["means"].device)
         w2c = camera.w2c.to(dtype=torch.float32, device=gaussians["means"].device)
 
-        viewmat = w2c[:3, :4].unsqueeze(0)
-        K_batch = K.unsqueeze(0)
+        viewmat = w2c[None, None]
+        K_batch = K[None, None]
 
         try:
             result = gsplat.rasterization(

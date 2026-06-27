@@ -90,7 +90,7 @@ def main():
     cv2.imwrite(str(out_dir / "render_rgb.png"), rgb_bgr)
 
     if output.depth is not None:
-        depth_np = output.depth.cpu().numpy()
+        depth_np = output.depth.cpu().numpy().squeeze()
         if depth_np[depth_np > 0].size > 0:
             d_min, d_max = depth_np[depth_np > 0].min(), depth_np.max()
             depth_viz = np.clip((depth_np - d_min) / (d_max - d_min + 1e-8), 0, 1)

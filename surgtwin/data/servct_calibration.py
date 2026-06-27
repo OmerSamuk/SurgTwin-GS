@@ -6,12 +6,25 @@ import numpy as np
 import torch
 
 
+def _parse_opencv_matrix(val) -> np.ndarray:
+    """Parse OpenCV JSON matrix format:
+    {"type_id": "opencv-matrix", "rows": 3, "cols": 4, "dt": "d", "data": [...]}
+    If val is already a list (plain array), return as-is.
+    """
+    if isinstance(val, dict):
+        rows = int(val["rows"])
+        cols = int(val["cols"])
+        data = val["data"]
+        return np.array(data, dtype=np.float64).reshape(rows, cols)
+    return np.array(val, dtype=np.float64)
+
+
 def parse_rectified_calibration(json_path: Path) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
     with open(json_path, "r") as f:
         calib = json.load(f)
-    P1 = np.array(calib["P1"], dtype=np.float64)
-    P2 = np.array(calib["P2"], dtype=np.float64)
-    Q = np.array(calib["Q"], dtype=np.float64)
+    P1 = _parse_opencv_matrix(calib["P1"])
+    P2 = _parse_opencv_matrix(calib["P2"])
+    Q = _parse_opencv_matrix(calib["Q"])
     if P1.shape != (3, 4) or P2.shape != (3, 4):
         raise ValueError(f"P1 and P2 must be 3x4 matrices, got P1 {P1.shape}, P2 {P2.shape}")
     if Q.shape != (4, 4):
