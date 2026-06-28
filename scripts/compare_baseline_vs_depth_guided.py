@@ -108,8 +108,8 @@ def _table_to_markdown(table: Dict) -> str:
         ("depth_valid_ratio", None, "depth_valid_ratio", None, "—"),
         ("depth_semantics", "depth_semantics_baseline", "depth_semantics_depth_guided", None, "required ✓"),
         ("n_gaussians", "n_gaussians_baseline", "n_gaussians_depth_guided", None, "—"),
-        ("lambda_depth", None, "lambda_depth", None, "0.2 ✓"),
-        ("lambda_reg", None, "lambda_reg", None, "0.01 ✓"),
+        ("lambda_depth", None, "lambda_depth", None, f"{fmt(table.get('lambda_depth'))} ✓"),
+        ("lambda_reg", None, "lambda_reg", None, f"{fmt(table.get('lambda_reg'))} ✓"),
     ]
 
     for label, bl_key, dg_key, delta_key, guard in rows:

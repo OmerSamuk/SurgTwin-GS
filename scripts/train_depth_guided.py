@@ -33,7 +33,7 @@ def main():
     parser.add_argument("--lambda_reg", type=float, default=0.01,
                         help="Weight for regularization (default: 0.01)")
     parser.add_argument("--reg_type", type=str, default="scale_drift",
-                        choices=["scale_drift"],
+                        choices=["scale_drift", "none"],
                         help="Regularization type (default: scale_drift)")
     parser.add_argument("--depth_near_m", type=float, default=0.02,
                         help="Near depth range in meters (default: 0.02)")
