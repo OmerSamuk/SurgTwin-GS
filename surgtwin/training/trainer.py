@@ -130,7 +130,7 @@ class BaselineTrainer:
                 image_width=entry["width"],
                 render_depth=False,
             )
-            pred_rgb = out.rgb
+            pred_rgb = out.rgb[..., :3]
             psnr_list.append(psnr(pred_rgb, gt_rgb))
             ssim_list.append(ssim(pred_rgb, gt_rgb))
             val_score = lpips_score(pred_rgb, gt_rgb, self.device)
@@ -166,6 +166,8 @@ class BaselineTrainer:
         import numpy as np
 
         arr = (rgb_tensor.detach().cpu().numpy() * 255).astype(np.uint8)
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            arr = arr[..., :3]
         bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
         cv2.imwrite(str(path), bgr)
 
@@ -191,15 +193,15 @@ class BaselineTrainer:
             image_width=entry["width"],
             render_depth=False,
         )
-        l1 = torch.abs(out.rgb - gt_rgb).mean()
+        l1 = torch.abs(out.rgb[..., :3] - gt_rgb).mean()
         l1.backward()
         self.optimizer.step()
 
         with torch.no_grad():
-            out.rgb.clamp_(0.0, 1.0)
+            out.rgb[..., :3].clamp_(0.0, 1.0)
             self.gaussians.scales.data.clamp_(min=1e-5)
             self.gaussians.opacities.data.clamp_(min=-10.0, max=10.0)
-            p = psnr(out.rgb, gt_rgb)
+            p = psnr(out.rgb[..., :3], gt_rgb)
 
         return {
             "loss": l1.item(),
