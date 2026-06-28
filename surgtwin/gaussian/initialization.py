@@ -35,14 +35,13 @@ def initialize_gaussians_from_rgbd(
 
     colors = rgb[ys, xs]
 
-    scales = torch.clamp(sampled_depths.unsqueeze(-1) * 0.002, min=1e-5, max=3e-3)
-    scales = scales.expand(-1, 3).contiguous()
+    scale_val = torch.clamp(sampled_depths.unsqueeze(-1) * 0.002, min=1e-5, max=3e-3)
+    scales = scale_val.expand(-1, 3).contiguous()
 
     quats = torch.zeros(n_sample, 4, device=depth_m.device)
     quats[:, 0] = 1.0
 
-    opacity_logit = torch.logit(torch.tensor(0.1, device=depth_m.device))
-    opacities = opacity_logit.expand(n_sample)
+    opacities = torch.full((n_sample,), 0.1, device=depth_m.device)
 
     return GaussianModel(
         means=means,
