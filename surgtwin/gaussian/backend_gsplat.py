@@ -19,7 +19,9 @@ def _add_batch_v_dims(t: torch.Tensor) -> torch.Tensor:
 
 
 def _remove_batch_v_dims(t: torch.Tensor) -> torch.Tensor:
-    return t[0, 0]
+    while t.ndim > 3 and t.shape[0] == 1:
+        t = t.squeeze(0)
+    return t
 
 
 class GsplatBackend(RendererBackend):
