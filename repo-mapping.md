@@ -40,6 +40,26 @@ Bu belge, SurgTwin-GS projesinde kullanılacak GitHub repolarının hangi amaçl
 - **Projedeki Yeri:** Faz-2 (SfM-free ve Kamera Poz İnce Ayarı).
 - **Kullanım Amacı:** Konsept belgemizde Faz-1 için "kamera poz tahmin (pose estimation) probleminin SERV-CT gibi veri setleriyle izole edileceği" açıkça yazılmıştır. Ancak proje Faz-2'ye (kendi kamera pozunu bulan monocular sisteme) geçtiğinde, endoskobun uzaydaki hareketinin (trajectory) doğruluğunu hesaplamak için (ATE RMSE - Absolute Trajectory Error vb.) EVO kütüphanesini doğrudan kalite ölçüm aracı olarak kullanacağız.
 
+## 7. Yardımcı ve Referans Repolar
+
+Doğrudan SurgTwin-GS koduna entegre edilmeyecek, ancak araştırma ve kıyaslama amacıyla kullanılacak repolar:
+
+### 7a. 3DGS Tabanlı Tıbbi Görüntüleme Yöntemleri
+- **Free-SurGS** (`resources/repos/3d-gaussian-splatting/Free-SurGS-main`) — SfM-Free 3D Gaussian Splatting, görüntüden 3D sahneye doğrudan geçiş referansı
+- **GaSpCT** (`resources/repos/3d-gaussian-splatting/GaSpCT-main`) — Gaussian Splatting ile BT projeksiyon görüntülerinden novel view sentezi
+- **MedGS** (`resources/repos/3d-gaussian-splatting/MedGS-main`) — Multi-modal 3D medikal görüntüleme için GS
+
+### 7b. INR ve MRI Rekonstrüksiyonu
+- **PixelINR** (`resources/repos/inr-mri/PixelINR-main`) — Scan-specific self-supervised MRI reconstruction via implicit neural representations
+
+### 7c. Tıbbi 3D Model Üretimi
+- **3D-DGGAN** (`resources/repos/medical-3d-models/3D-DGGAN`) — Data-Guided GAN ile tıbbi görüntü üretimi
+- **Brain_VQGAN_TATrans** (`resources/repos/medical-3d-models/Brain_VQGAN_TATrans`) — VQGAN + Transformer ile beyin MR sentezi
+- **HA-GAN** (`resources/repos/medical-3d-models/HA-GAN`) — Hierarchy-Aware GAN ile tıbbi görüntü üretimi
+- **PTNet3D** (`resources/repos/medical-3d-models/PTNet3D`) — 3D Point Transformer ile tıbbi görüntü segmentasyonu
+- **PWFHarmonization** (`resources/repos/medical-3d-models/PWFHarmonization`) — Tıbbi görüntü harmanizasyonu
+- **SOUP-GAN** (`resources/repos/medical-3d-models/SOUP-GAN`) — Spectral-Spatial GAN ile tıbbi görüntü iyileştirme
+
 ---
 
 **Özetle:** Projenin kodlama aşamasına geçerken **UC-NeRF**'ten belirsizlik matematiğini, **tiny-cuda-nn**'den donanım hızlandırmasını, **Endoscopy Corruptions**'tan robüstlük testlerini alacak ve kurduğumuz mimariyi **EndoNeRF** ve **Forplane**'e karşı yarıştıracağız.

@@ -6,12 +6,20 @@ dist/
 build/
 .pytest_cache/
 
+# Generated data (SERV-CT synthetic, manifests)
+data/manifest.jsonl
 data/raw/
-data/processed/masks/
-data/processed/debug/
-data/processed/cache/
+data/processed/
 
+# All training outputs (checkpoints, renders, metrics)
 outputs/
+
+# Scratch scripts
+scripts/_debug/
+scripts/_setup/
+
+# Obsidian log exports
+diary/logs/
 
 .env
 *.log
