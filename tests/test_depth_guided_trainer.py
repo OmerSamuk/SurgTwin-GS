@@ -15,15 +15,20 @@ from surgtwin.training.depth_guided_trainer import (
 )
 
 
+def _device():
+    return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
 class _MetricDepthBackend:
     def __init__(self):
         self.name = "metric_dummy"
 
     def render(self, gaussians, camera, image_height, image_width, render_depth=True):
+        dev = _device()
         return RenderOutput(
-            rgb=torch.rand(image_height, image_width, 3),
-            depth=torch.rand(image_height, image_width) * 0.10 + 0.05,
-            alpha=torch.rand(image_height, image_width),
+            rgb=torch.rand(image_height, image_width, 3, device=dev),
+            depth=torch.rand(image_height, image_width, device=dev) * 0.10 + 0.05,
+            alpha=torch.rand(image_height, image_width, device=dev),
             aux={
                 "depth_semantics": "metric_meters",
                 "supports_metric_depth": True,
@@ -36,10 +41,11 @@ class _NonMetricBackend:
         self.name = "non_metric_dummy"
 
     def render(self, gaussians, camera, image_height, image_width, render_depth=True):
+        dev = _device()
         return RenderOutput(
-            rgb=torch.rand(image_height, image_width, 3),
-            depth=torch.rand(image_height, image_width) * 0.10 + 0.05,
-            alpha=torch.rand(image_height, image_width),
+            rgb=torch.rand(image_height, image_width, 3, device=dev),
+            depth=torch.rand(image_height, image_width, device=dev) * 0.10 + 0.05,
+            alpha=torch.rand(image_height, image_width, device=dev),
             aux={
                 "depth_semantics": "relative_unaligned",
                 "supports_metric_depth": False,
