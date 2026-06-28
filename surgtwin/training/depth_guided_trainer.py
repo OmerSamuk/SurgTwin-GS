@@ -157,7 +157,7 @@ class DepthGuidedTrainer(BaselineTrainer):
             "loss_total": loss_total.item(),
             "photo_loss": loss_photo.item(),
             "depth_loss_raw_m": depth_diag["depth_loss_raw_m"].item(),
-            "depth_loss_weighted": (self.dg_config.lambda_depth * depth_loss.detach()).item(),
+            "depth_loss_weighted": (self.dg_config.lambda_depth * loss_depth.detach()).item(),
             "reg_loss_raw": loss_reg.item(),
             "reg_loss_weighted": (self.dg_config.lambda_reg * loss_reg.detach()).item(),
             "psnr": psnr_val,
