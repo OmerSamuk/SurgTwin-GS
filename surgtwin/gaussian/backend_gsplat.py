@@ -21,6 +21,10 @@ def _add_batch_v_dims(t: torch.Tensor) -> torch.Tensor:
 def _remove_batch_v_dims(t: torch.Tensor) -> torch.Tensor:
     while t.ndim > 3 and t.shape[0] == 1:
         t = t.squeeze(0)
+    while t.ndim == 3 and t.shape[0] == 1:
+        t = t.squeeze(0)
+    while t.ndim == 3 and t.shape[-1] == 1:
+        t = t.squeeze(-1)
     return t
 
 
@@ -43,7 +47,7 @@ class GsplatBackend(RendererBackend):
             means = torch.tensor([[[[0.0, 0.0, 2.0]]]], dtype=torch.float32, device=device)
             quats = torch.tensor([[[[1.0, 0.0, 0.0, 0.0]]]], dtype=torch.float32, device=device)
             scales = torch.tensor([[[[0.01, 0.01, 0.01]]]], dtype=torch.float32, device=device)
-            opacities = torch.tensor([[[[1.0]]]], dtype=torch.float32, device=device)
+            opacities = torch.tensor([[[1.0]]], dtype=torch.float32, device=device)
             colors = torch.tensor([[[[0.5, 0.5, 0.5]]]], dtype=torch.float32, device=device)
 
             K = torch.eye(3, dtype=torch.float32, device=device)[None, None, None]
@@ -64,7 +68,7 @@ class GsplatBackend(RendererBackend):
                 Ks=K,
                 width=100,
                 height=100,
-                render_mode="RGB+D",
+                render_mode="RGB+ED",
             )
 
             render_colors, render_alphas, meta = result
@@ -116,7 +120,7 @@ class GsplatBackend(RendererBackend):
                 Ks=K_batch,
                 width=image_width,
                 height=image_height,
-                render_mode="RGB+D",
+                render_mode="RGB+ED" if render_depth else "RGB",
             )
         except Exception as e:
             raise RuntimeError(f"gsplat rasterization failed: {e}")
@@ -144,6 +148,8 @@ class GsplatBackend(RendererBackend):
             "depth_semantics": depth_semantics,
             "supports_metric_depth": depth_semantics == "metric_meters",
             "metric_depth_verified": self._depth_is_metric,
+            "depth_distribution_verified": False,
+            "depth_verification_artifact_path": "",
             "supports_alpha": True,
             "supports_contrib": False,
             "supports_color_variance": False,

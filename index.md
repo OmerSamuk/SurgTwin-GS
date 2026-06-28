@@ -18,4 +18,5 @@ Belirsizlik sinyallerini (derinlik tutarsızlığı, çapraz-görünüm uyuşmaz
 - [[charters/SurgTwin-GS_Detailed_Concept_Paper.docx]] — Kilitli konsept dokümanı
 - [[areas/ct-mri-fusion]] — CT-MRI Füzyonu araştırma alanı
 - [[repo-mapping]] — Repo kullanım haritası
+- [[NOTICE]] — Lisans ve atıf bilgileri
 - [[00-index|Vault Index]]
