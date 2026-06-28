@@ -83,11 +83,13 @@ class BaselineTrainer:
             num_points=self.config.init_num_points,
         )
         self.gaussians = self.gaussians.to(self.device)
+        for p in self.gaussians.state_dict().values():
+            p.requires_grad_(True)
 
     def _build_optimizer(self) -> None:
         if self.gaussians is None:
             raise RuntimeError("Gaussians not initialized before building optimizer.")
-        gd = self.gaussians.state_dict()
+        gd = {k: v for k, v in self.gaussians.__dict__.items() if isinstance(v, torch.Tensor)}
         self.optimizer = Adam([
             {"params": [gd["means"]], "lr": self.config.lr_means},
             {"params": [gd["scales"]], "lr": self.config.lr_scales},
