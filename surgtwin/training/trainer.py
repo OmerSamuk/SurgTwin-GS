@@ -268,6 +268,7 @@ class BaselineTrainer:
                 self.save(i)
 
         final_metrics["final_loss"] = step["loss"]
+        final_metrics["n_gaussians"] = step["n_gaussians"]
         val_metrics = self._run_val(config.iterations)
         final_metrics.update(val_metrics)
         final_metrics["loss_decreased"] = final_metrics["final_loss"] < final_metrics["initial_loss"]
