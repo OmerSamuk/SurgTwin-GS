@@ -171,10 +171,8 @@ class DepthGuidedTrainer(BaselineTrainer):
         }
 
     def _compute_psnr(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
-        mse = (pred - gt).pow(2).mean().item()
-        if mse < 1e-12:
-            return 100.0
-        return float(-10.0 * np.log10(mse))
+        from surgtwin.evaluation.image_metrics import psnr
+        return psnr(pred, gt)
 
     def _run_val(self, iter_idx: int) -> Dict[str, float]:
         self.gaussians.means.requires_grad_(False)
@@ -263,7 +261,7 @@ class DepthGuidedTrainer(BaselineTrainer):
 
     def _compute_ssim(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
         from surgtwin.evaluation.image_metrics import ssim
-        return float(ssim(pred, gt).item())
+        return ssim(pred, gt)
 
     def _lpips_score(self, pred: torch.Tensor, gt: torch.Tensor, device: torch.device):
         from surgtwin.evaluation.image_metrics import lpips_score
