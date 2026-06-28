@@ -7,6 +7,7 @@ import cv2
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from surgtwin.data.manifest import assign_split
 from surgtwin.data.servct_calibration import parse_rectified_calibration, rectified_to_camera_data
 
 
@@ -92,9 +93,10 @@ def main():
                 "width": width,
                 "depth_unit": "meter",
                 "depth_scale_applied": 0.000256,
-                "split": "train",
             }
             entries.append(entry)
+
+    assign_split(entries)
 
     out_path = Path(args.output_manifest)
     out_path.parent.mkdir(parents=True, exist_ok=True)

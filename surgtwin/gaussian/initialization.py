@@ -1,5 +1,7 @@
 import torch
 
+from surgtwin.gaussian.gaussian_model import GaussianModel
+
 
 def initialize_gaussians_from_rgbd(
     rgb: torch.Tensor,
@@ -7,7 +9,7 @@ def initialize_gaussians_from_rgbd(
     K: torch.Tensor,
     c2w: torch.Tensor,
     num_points: int = 20000,
-) -> dict:
+) -> GaussianModel:
     H, W = depth_m.shape
     valid = (depth_m > 0) & torch.isfinite(depth_m)
     if valid.sum() == 0:
@@ -33,20 +35,19 @@ def initialize_gaussians_from_rgbd(
 
     colors = rgb[ys, xs]
 
-    scales = torch.clamp(sampled_depths.unsqueeze(-1) * 0.002, min=1e-5, max=3e-3)
-    scales = scales.expand(-1, 3).contiguous()
+    scale_val = torch.clamp(sampled_depths.unsqueeze(-1) * 0.002, min=1e-5, max=3e-3)
+    scales = scale_val.expand(-1, 3).contiguous()
 
     quats = torch.zeros(n_sample, 4, device=depth_m.device)
     quats[:, 0] = 1.0
 
-    opacity_logit = torch.logit(torch.tensor(0.1, device=depth_m.device))
-    opacities = opacity_logit.expand(n_sample)
+    opacities = torch.full((n_sample,), 0.1, device=depth_m.device)
 
-    return {
-        "means": means,
-        "scales": scales,
-        "quats": quats,
-        "opacities": opacities,
-        "colors": colors,
-        "reliability_logits": torch.zeros(n_sample, device=depth_m.device),
-    }
+    return GaussianModel(
+        means=means,
+        scales=scales,
+        quats=quats,
+        opacities=opacities,
+        colors=colors,
+        reliability_logits=torch.zeros(n_sample, device=depth_m.device),
+    )

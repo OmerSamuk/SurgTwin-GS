@@ -73,9 +73,10 @@ def main():
     torch.cuda.reset_peak_memory_stats()
     t0 = time.time()
 
+    gaussians_cuda = gaussians.to(torch.device("cuda"))
     print("Rendering with gsplat...")
     output = backend.render(
-        gaussians={k: v.cuda() for k, v in gaussians.items()},
+        gaussians=gaussians_cuda,
         camera=camera,
         image_height=height,
         image_width=width,
@@ -104,7 +105,7 @@ def main():
     alpha_viz = (alpha_np * 255).astype(np.uint8)
     cv2.imwrite(str(out_dir / "render_alpha.png"), alpha_viz)
 
-    n_gaussians = gaussians["means"].shape[0]
+    n_gaussians = gaussians.num_gaussians()
     render_report = {
         "backend": "gsplat",
         "num_gaussians": n_gaussians,
