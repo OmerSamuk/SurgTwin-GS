@@ -2,7 +2,16 @@ from typing import Any, Dict, Optional
 
 import torch
 
+from surgtwin.gaussian.gaussian_model import GaussianModel
 from surgtwin.gaussian.renderer_interface import RenderOutput, RendererBackend
+
+
+def _resolve_gaussian_dict(gaussians: Any) -> Dict[str, torch.Tensor]:
+    if isinstance(gaussians, GaussianModel):
+        return gaussians.state_dict()
+    if isinstance(gaussians, dict):
+        return gaussians
+    raise TypeError(f"Expected GaussianModel or dict, got {type(gaussians)}")
 
 
 class GsplatBackend(RendererBackend):
@@ -15,7 +24,8 @@ class GsplatBackend(RendererBackend):
     def name(self) -> str:
         return self._name
 
-    def _verify_metric_depth(self, gaussians: Dict[str, torch.Tensor]) -> bool:
+    def _verify_metric_depth(self, gaussians: Any) -> bool:
+        gd = _resolve_gaussian_dict(gaussians)
         try:
             import gsplat
 
@@ -64,7 +74,7 @@ class GsplatBackend(RendererBackend):
 
     def render(
         self,
-        gaussians: Dict[str, torch.Tensor],
+        gaussians: Any,
         camera: Any,
         image_height: int,
         image_width: int,
@@ -72,23 +82,25 @@ class GsplatBackend(RendererBackend):
     ) -> RenderOutput:
         import gsplat
 
+        gd = _resolve_gaussian_dict(gaussians)
+
         if not self._depth_verified:
-            self._depth_is_metric = self._verify_metric_depth(gaussians)
+            self._depth_is_metric = self._verify_metric_depth(gd)
             self._depth_verified = True
 
-        K = camera.K.to(dtype=torch.float32, device=gaussians["means"].device)
-        w2c = camera.w2c.to(dtype=torch.float32, device=gaussians["means"].device)
+        K = camera.K.to(dtype=torch.float32, device=gd["means"].device)
+        w2c = camera.w2c.to(dtype=torch.float32, device=gd["means"].device)
 
         viewmat = w2c[None, None]
         K_batch = K[None, None]
 
         try:
             result = gsplat.rasterization(
-                means=gaussians["means"].unsqueeze(0),
-                quats=gaussians["quats"].unsqueeze(0),
-                scales=gaussians["scales"].unsqueeze(0),
-                opacities=torch.sigmoid(gaussians["opacities"]).unsqueeze(0),
-                colors=gaussians["colors"].unsqueeze(0),
+                means=gd["means"].unsqueeze(0),
+                quats=gd["quats"].unsqueeze(0),
+                scales=gd["scales"].unsqueeze(0),
+                opacities=torch.sigmoid(gd["opacities"]).unsqueeze(0),
+                colors=gd["colors"].unsqueeze(0),
                 viewmats=viewmat,
                 Ks=K_batch,
                 width=image_width,

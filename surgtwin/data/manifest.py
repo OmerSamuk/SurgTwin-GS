@@ -3,6 +3,47 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 
+SPLIT_SEED = 42
+
+
+def _sequence_and_index_seed(seq: str, fi: int, seed: int) -> int:
+    """Hash sequence_id and frame_index into a signed 32-bit int for deterministic seeding."""
+    import hashlib
+
+    s = f"{seq}_{fi}_{seed}"
+    return int(hashlib.sha256(s.encode()).hexdigest()[:8], 16)
+
+
+def assign_split(entries: List[Dict]) -> None:
+    """Deterministic frame-index split.
+
+    Experiment_1 frame 0-5  → train
+    Experiment_1 frame 6-7  → val
+    Experiment_2 frame 0-7  → test
+
+    Mutates entries in place.
+    """
+    for entry in entries:
+        seq = entry.get("sequence_id", "")
+        fi = entry.get("frame_index", -1)
+        if seq == "Experiment_1" and 1 <= fi <= 6:
+            entry["split"] = "train"
+        elif seq == "Experiment_1" and fi >= 7:
+            entry["split"] = "val"
+        elif seq == "Experiment_2":
+            entry["split"] = "test"
+        else:
+            raise ValueError(
+                f"Cannot determine split for sequence_id={seq!r} frame_index={fi}. "
+                f"Expected Experiment_1 (frames 1-8) or Experiment_2 (frames 1-8)."
+            )
+
+
+def filter_by_split(entries: List[Dict], split_name: str) -> List[Dict]:
+    """Return entries whose split field matches split_name."""
+    return [e for e in entries if e.get("split") == split_name]
+
+
 def load_manifest(path: Path) -> List[Dict]:
     if not path.exists():
         raise FileNotFoundError(f"Manifest not found at {path}. Run scripts/explore_servct.py first.")

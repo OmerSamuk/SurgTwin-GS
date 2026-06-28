@@ -1,5 +1,7 @@
 import torch
 
+from surgtwin.gaussian.gaussian_model import GaussianModel
+
 
 def initialize_gaussians_from_rgbd(
     rgb: torch.Tensor,
@@ -7,7 +9,7 @@ def initialize_gaussians_from_rgbd(
     K: torch.Tensor,
     c2w: torch.Tensor,
     num_points: int = 20000,
-) -> dict:
+) -> GaussianModel:
     H, W = depth_m.shape
     valid = (depth_m > 0) & torch.isfinite(depth_m)
     if valid.sum() == 0:
@@ -42,11 +44,11 @@ def initialize_gaussians_from_rgbd(
     opacity_logit = torch.logit(torch.tensor(0.1, device=depth_m.device))
     opacities = opacity_logit.expand(n_sample)
 
-    return {
-        "means": means,
-        "scales": scales,
-        "quats": quats,
-        "opacities": opacities,
-        "colors": colors,
-        "reliability_logits": torch.zeros(n_sample, device=depth_m.device),
-    }
+    return GaussianModel(
+        means=means,
+        scales=scales,
+        quats=quats,
+        opacities=opacities,
+        colors=colors,
+        reliability_logits=torch.zeros(n_sample, device=depth_m.device),
+    )
