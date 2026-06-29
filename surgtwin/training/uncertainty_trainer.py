@@ -587,6 +587,17 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 mask_boost=self.unc_config.mask_boost,
             )
 
+            residual = compute_photo_residual(out.rgb[..., :3], gt_rgb, detach_pred=True)
+            scale = compute_p95_scale(residual)
+            u_photo = compute_u_photo(residual, scale)
+            if mask is not None:
+                w_photo = compute_w_photo_with_mask(
+                    u_photo, mask, alpha=self.unc_config.alpha,
+                    w_min=self.unc_config.w_photo_min, mask_boost=self.unc_config.mask_boost,
+                )
+            else:
+                w_photo = compute_w_photo(u_photo, alpha=self.unc_config.alpha, w_min=self.unc_config.w_photo_min)
+
             def _norm_depth(d):
                 valid = (d > 0.02) & (d < 0.30) & np.isfinite(d)
                 if not valid.any():
@@ -598,19 +609,22 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 return (norm * 255).astype(np.uint8)
 
             error_map = np.abs(pred_d_np - gt_d_np)
+            w_np = w_photo.detach().cpu().numpy()
+            w_norm = np.clip((w_np - self.unc_config.w_photo_min) / (1.0 - self.unc_config.w_photo_min), 0, 1)
+            w_color = cv2.applyColorMap((w_norm * 255).astype(np.uint8), cv2.COLORMAP_VIRIDIS)
 
-            w_photo_from_np = np.zeros((entry["height"], entry["width"]), dtype=np.float32)
             panels = [
                 cv2.cvtColor(gt_rgb_np, cv2.COLOR_RGB2BGR),
                 cv2.cvtColor(pred_rgb_np, cv2.COLOR_RGB2BGR),
                 cv2.applyColorMap(_norm_depth(gt_d_np), cv2.COLORMAP_INFERNO),
                 cv2.applyColorMap(_norm_depth(pred_d_np), cv2.COLORMAP_INFERNO),
                 cv2.applyColorMap(_norm_depth(error_map), cv2.COLORMAP_VIRIDIS),
+                w_color,
             ]
             h, w = gt_rgb_np.shape[:2]
             top = np.hstack([panels[0], panels[1]])
             mid = np.hstack([panels[2], panels[3]])
-            bottom = np.hstack([panels[4], np.zeros((h, w, 3), dtype=np.uint8)])
+            bottom = np.hstack([panels[4], panels[5]])
             full = np.vstack([top, mid, bottom])
             panel_path = panel_dir / f"val_{entry['sample_id']}_panel.png"
             cv2.imwrite(str(panel_path), full)

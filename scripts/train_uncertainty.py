@@ -1,5 +1,6 @@
 import argparse
 import json
+import shutil
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -54,14 +55,25 @@ def _preflight_m2a_artifact(artifact_path: str, allow_mock: bool) -> None:
     print(f"M2-A gate PASS verified: {p}")
 
 
-def _resolve_output_dir(output_dir: Path, allow_mock: bool) -> Path:
+def _resolve_output_dir(output_dir: Path, allow_mock: bool, overwrite: bool = False) -> Path:
     if allow_mock:
         debug_dir = output_dir.parent / f"_debug_{output_dir.name}"
         debug_dir.mkdir(parents=True, exist_ok=True)
         print(f"  Debug run output: {debug_dir}")
         print(f"  This run will NOT be eligible for gate comparison.")
         return debug_dir
-    output_dir.mkdir(parents=True, exist_ok=True)
+    if output_dir.exists() and any(output_dir.iterdir()):
+        if overwrite:
+            shutil.rmtree(output_dir)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            print(f"  Overwriting existing output directory: {output_dir}")
+        else:
+            raise SystemExit(
+                f"FATAL: output_dir is not empty: {output_dir}. "
+                f"Use --overwrite to clean and re-run."
+            )
+    else:
+        output_dir.mkdir(parents=True, exist_ok=True)
     return output_dir
 
 
@@ -105,6 +117,8 @@ def main():
     parser.add_argument("--allow_mock_m2a", action="store_true",
                         help="Debug/smoke-test mode: skip M2-A gate check. "
                              "Setting this with --prod_mode is a hard error.")
+    parser.add_argument("--overwrite", action="store_true", default=False,
+                        help="Clean and re-use existing output_dir")
     parser.add_argument("--no_clip_grad", action="store_true",
                         help="Disable gradient clipping")
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
@@ -121,7 +135,7 @@ def main():
     _preflight_m2a_artifact(args.depth_semantics_artifact, args.allow_mock_m2a)
 
     # Resolve output dir (debug mode relocates to _debug_ prefix)
-    output_dir = _resolve_output_dir(Path(args.output_dir), args.allow_mock_m2a)
+    output_dir = _resolve_output_dir(Path(args.output_dir), args.allow_mock_m2a, args.overwrite)
 
     entries = load_manifest(Path(args.manifest))
     for entry in entries:

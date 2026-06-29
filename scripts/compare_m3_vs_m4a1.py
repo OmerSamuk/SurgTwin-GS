@@ -25,6 +25,13 @@ def _load_final_metrics(run_dir: Path) -> Dict:
     return json.loads(path.read_text())
 
 
+def _load_manifest_snapshot(run_dir: Path) -> Optional[Dict]:
+    path = run_dir / "manifest_snapshot.json"
+    if not path.exists():
+        return None
+    return json.loads(path.read_text())
+
+
 def _load_vram_stats(run_dir: Path) -> Optional[Dict]:
     path = run_dir / "metrics.jsonl"
     if not path.exists():
@@ -138,7 +145,8 @@ def _build_comparison_table(m3_row: Dict, m4_row: Dict, vram: Optional[Dict]) ->
     return table
 
 
-def _compute_gate(m3_row: Dict, m4_row: Dict, vram: Optional[Dict]) -> Dict:
+def _compute_gate(m3_row: Dict, m4_row: Dict, vram: Optional[Dict],
+                  m3_snapshot: Optional[Dict] = None, m4_snapshot: Optional[Dict] = None) -> Dict:
     m4_psnr = m4_row.get("val_psnr")
     m4_rmse = m4_row.get("val_depth_rmse_m_raw")
     m4_n_gaussians = m4_row.get("n_gaussians")
@@ -146,6 +154,55 @@ def _compute_gate(m3_row: Dict, m4_row: Dict, vram: Optional[Dict]) -> Dict:
 
     results = {}
     blocking = []
+
+    # --- Config integrity checks (gate-blocking) ---
+
+    # 1. Manifest sha256 equality
+    m3_sha = m3_snapshot.get("manifest_sha256") if m3_snapshot else None
+    m4_sha = m4_snapshot.get("manifest_sha256") if m4_snapshot else None
+    manifest_ok = m3_sha is not None and m4_sha is not None and m3_sha == m4_sha
+    results["manifest_sha256_match"] = manifest_ok
+    results["m3_manifest_sha256"] = m3_sha
+    results["m4_manifest_sha256"] = m4_sha
+    if not manifest_ok:
+        blocking.append(f"manifest sha256 mismatch: M3={m3_sha}, M4={m4_sha}")
+
+    # 2. loss_decreased
+    loss_dec = m4_row.get("loss_decreased")
+    results["loss_decreased"] = loss_dec is True
+    results["loss_decreased_value"] = loss_dec
+    if loss_dec is not True:
+        blocking.append(f"loss_decreased={loss_dec}, expected True")
+
+    # 3. enable_densification == false
+    dens_on = m4_row.get("enable_densification")
+    results["densification_off"] = dens_on is False
+    results["enable_densification"] = dens_on
+    if dens_on is not False:
+        blocking.append(f"enable_densification={dens_on}, expected False")
+
+    # 4. depth_semantics == metric_meters
+    ds = m4_row.get("depth_semantics")
+    results["depth_semantics_ok"] = ds == "metric_meters"
+    results["depth_semantics"] = ds
+    if ds != "metric_meters":
+        blocking.append(f"depth_semantics={ds}, expected metric_meters")
+
+    # 5. val_w_photo_mean in [0.15, 0.95]
+    w_mean = m4_row.get("val_w_photo_mean")
+    results["w_photo_mean_in_range"] = w_mean is not None and 0.15 <= w_mean <= 0.95
+    results["w_photo_mean"] = w_mean
+    if w_mean is None or not (0.15 <= w_mean <= 0.95):
+        blocking.append(f"val_w_photo_mean {_fmt(w_mean)} outside [0.15, 0.95]")
+
+    # 6. val_fraction_w_photo_at_min < 0.90
+    frac_min = m4_row.get("val_fraction_w_photo_at_min")
+    results["fraction_at_min_ok"] = frac_min is not None and frac_min < 0.90
+    results["fraction_w_photo_at_min"] = frac_min
+    if frac_min is None or frac_min >= 0.90:
+        blocking.append(f"fraction_w_photo_at_min {_fmt(frac_min)} >= 0.90 (weight collapse)")
+
+    # --- Performance checks ---
 
     # PSNR gate
     psnr_pass = m4_psnr is not None and m4_psnr >= PSNR_THRESHOLD
@@ -205,7 +262,7 @@ def _compute_gate(m3_row: Dict, m4_row: Dict, vram: Optional[Dict]) -> Dict:
     results["vram_info"] = vram
 
     # Final status
-    if psnr_pass and depth_pass and n_gauss_ok:
+    if psnr_pass and depth_pass and n_gauss_ok and manifest_ok and loss_dec is True and dens_on is False and ds == "metric_meters":
         if vram_tier in ("green", "acceptable"):
             results["status"] = "FULL PASS"
             results["label"] = "M4-A1 Full PASS"
@@ -280,6 +337,12 @@ def _format_table_markdown(comparison: List[Dict], gate: Dict, m3_run_id: str, m
         f"| n_gaussians == 50000 | {'✅' if gate.get('n_gaussians_ok') else '❌'} | {gate.get('n_gaussians', 'N/A')} |",
         f"| Improved over M3-H1 | {'✅' if gate.get('improved_over_m3_h1') else '❌'} | baseline {_fmt(gate.get('m3_h1_depth_rmse'), 6)} m |",
         f"| VRAM tier | {gate.get('vram_tier', 'N/A')} | {_fmt(gate.get('vram_info', {}).get('max_vram_gb')) if gate.get('vram_info') else 'N/A'} GB peak |",
+        f"| Manifest sha256 match | {'✅' if gate.get('manifest_sha256_match') else '❌'} | {'match' if gate.get('manifest_sha256_match') else 'MISMATCH'} |",
+        f"| loss_decreased | {'✅' if gate.get('loss_decreased') else '❌'} | {gate.get('loss_decreased_value', 'N/A')} |",
+        f"| enable_densification == false | {'✅' if gate.get('densification_off') else '❌'} | {gate.get('enable_densification', 'N/A')} |",
+        f"| depth_semantics == metric_meters | {'✅' if gate.get('depth_semantics_ok') else '❌'} | {gate.get('depth_semantics', 'N/A')} |",
+        f"| w_photo_mean in [0.15, 0.95] | {'✅' if gate.get('w_photo_mean_in_range') else '❌'} | {_fmt(gate.get('w_photo_mean'))} |",
+        f"| fraction_at_min < 0.90 | {'✅' if gate.get('fraction_at_min_ok') else '❌'} | {_fmt(gate.get('fraction_w_photo_at_min'))} |",
     ])
 
     if gate.get("blocking_reasons"):
@@ -331,12 +394,14 @@ def main():
     m3_metrics = _load_final_metrics(m3_path)
     m4_metrics = _load_final_metrics(m4_path)
     vram_stats = _load_vram_stats(m4_path)
+    m3_snapshot = _load_manifest_snapshot(m3_path)
+    m4_snapshot = _load_manifest_snapshot(m4_path)
 
     m3_row = {**m3_metrics, "run_id": "M3-H1"}
     m4_row = {**m4_metrics, "run_id": "M4-A1"}
 
     comparison = _build_comparison_table(m3_row, m4_row, vram_stats)
-    gate = _compute_gate(m3_row, m4_row, vram_stats)
+    gate = _compute_gate(m3_row, m4_row, vram_stats, m3_snapshot, m4_snapshot)
 
     comparison_path = out_path / "comparison_table.json"
     comparison_path.write_text(json.dumps({

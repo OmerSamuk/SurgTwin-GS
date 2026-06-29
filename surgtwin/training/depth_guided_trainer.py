@@ -47,7 +47,7 @@ def _save_depth_color(depth_tensor: torch.Tensor, path: Path, near_m: float = 0.
     if vmax - vmin < 1e-6:
         vmax = vmin + 1e-6
     normalized = np.clip((arr - vmin) / (vmax - vmin), 0, 1)
-    colored = (cv2.applyColorMap((normalized * 255).astype(np.uint8), cv2.COLORMAP_INFERNO) * 255).astype(np.uint8)
+    colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), cv2.COLORMAP_INFERNO)
     cv2.imwrite(str(path), colored)
 
 
