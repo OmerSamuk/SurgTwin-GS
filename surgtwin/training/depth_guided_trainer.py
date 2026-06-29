@@ -438,7 +438,7 @@ class DepthGuidedTrainer(BaselineTrainer):
             "## 6. Known Limitations",
             "- No uncertainty weighting (M3)",
             "- No density control (M4)",
-            "- Fixed 20k Gaussians, densification off",
+            f"- Fixed {fm.get('n_gaussians', 20000)} Gaussians, densification off",
             "",
             "## 7. Next Steps",
             "- Milestone 3: uncertainty-weighted loss",

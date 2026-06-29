@@ -546,7 +546,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             "",
             "## 7. Known Limitations",
             "- No density control (M4)",
-            "- Fixed 20k Gaussians, densification off",
+            f"- Fixed {fm.get('n_gaussians', 20000)} Gaussians, densification off",
             "- Learned mapper not included",
             "",
             "## 8. Next Steps",
