@@ -15,52 +15,59 @@ from surgtwin.gaussian.gaussian_model import GaussianModel
 from surgtwin.gaussian.renderer_interface import RendererBackend
 from surgtwin.losses.depth import depth_l1
 from surgtwin.losses.photometric import photometric_l1
-from surgtwin.losses.regularizers import REGISTRY as REG_REGISTRY
+from surgtwin.losses.uncertainty_weighted import uncertainty_weighted_photometric_l1
+from surgtwin.masks.io import load_specular_mask, mask_coverage
 from surgtwin.training.config import BaselineConfig
 from surgtwin.training.depth_guided_config import DepthGuidedConfig
-from surgtwin.training.trainer import BaselineTrainer, _load_rgb
+from surgtwin.training.depth_guided_trainer import DepthGuidedTrainer, _verify_m2a_artifact, _save_depth_color
+from surgtwin.training.uncertainty_config import UncertaintyConfig
+from surgtwin.uncertainty.signals import compute_photo_residual, compute_p95_scale, compute_u_photo, compute_w_photo, compute_w_photo_with_mask
 
 
-def _verify_m2a_artifact(path: Optional[Path]) -> None:
-    if path is None or not path.exists():
-        raise RuntimeError(
-            f"M2-A depth semantics artifact not found at '{path}'. "
-            f"Run scripts/verify_render_depth_semantics.py first "
-            f"and pass --depth_semantics_artifact."
-        )
-    data = json.loads(path.read_text())
-    if not data.get("depth_semantics_verified", False):
-        raise RuntimeError(
-            f"M2-A gate not PASS: {path}. "
-            f"depth_semantics_verified=false. "
-            f"Resolve depth semantics verification before M2-B."
-        )
+def _resolve_mask_path(entry: Dict, mask_dir: Optional[str]) -> Optional[Path]:
+    raw = entry.get("left_specular_mask_path")
+    if raw:
+        p = Path(raw)
+        if p.exists():
+            return p
+    if mask_dir:
+        sid = entry.get("sample_id", "unknown")
+        candidate = Path(mask_dir) / f"{sid}_specular.npy"
+        if candidate.exists():
+            return candidate
+    return None
 
 
-def _save_depth_color(depth_tensor: torch.Tensor, path: Path, near_m: float = 0.02, far_m: float = 0.30) -> None:
-    arr = depth_tensor.detach().cpu().numpy()
-    valid = (arr > near_m) & (arr < far_m) & np.isfinite(arr)
-    if valid.any():
-        vmin, vmax = float(arr[valid].min()), float(arr[valid].max())
-    else:
-        vmin, vmax = near_m, far_m
-    if vmax - vmin < 1e-6:
-        vmax = vmin + 1e-6
-    normalized = np.clip((arr - vmin) / (vmax - vmin), 0, 1)
-    colored = (cv2.applyColorMap((normalized * 255).astype(np.uint8), cv2.COLORMAP_INFERNO) * 255).astype(np.uint8)
+def _save_u_photo_color(u_tensor: torch.Tensor, path: Path) -> None:
+    arr = u_tensor.detach().cpu().numpy()
+    normalized = np.clip(arr, 0, 1)
+    colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), cv2.COLORMAP_INFERNO)
     cv2.imwrite(str(path), colored)
 
 
-class DepthGuidedTrainer(BaselineTrainer):
+def _save_w_photo_color(w_tensor: torch.Tensor, path: Path, w_min: float = 0.15) -> None:
+    arr = w_tensor.detach().cpu().numpy()
+    normalized = np.clip((arr - w_min) / (1.0 - w_min), 0, 1)
+    colored = cv2.applyColorMap((normalized * 255).astype(np.uint8), cv2.COLORMAP_VIRIDIS)
+    cv2.imwrite(str(path), colored)
+
+
+def _load_rgb(path: str) -> torch.Tensor:
+    import cv2, numpy as np
+    img = cv2.cvtColor(cv2.imread(path), cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+    return torch.from_numpy(img)
+
+
+class UncertaintyTrainer(DepthGuidedTrainer):
     def __init__(
         self,
         train_entries: List[Dict],
         val_entries: List[Dict],
         backend: RendererBackend,
-        config: DepthGuidedConfig,
+        config: UncertaintyConfig,
         output_dir: Path,
     ):
-        baseline_cfg = BaselineConfig(
+        dg_cfg = DepthGuidedConfig(
             iterations=config.iterations,
             log_every=config.log_every,
             val_every=config.val_every,
@@ -74,18 +81,36 @@ class DepthGuidedTrainer(BaselineTrainer):
             enable_densification=config.enable_densification,
             seed=config.seed,
             backend=config.backend,
+            lambda_depth=config.lambda_depth,
+            lambda_reg=config.lambda_reg,
+            depth_near_m=config.depth_near_m,
+            depth_far_m=config.depth_far_m,
+            clip_grad_norm=config.clip_grad_norm,
+            max_grad_norm=config.max_grad_norm,
+            log_grad_norm=config.log_grad_norm,
+            depth_semantics_artifact_path=config.depth_semantics_artifact_path,
         )
-        super().__init__(train_entries, val_entries, backend, baseline_cfg, output_dir)
-        self.dg_config = config
-        self.init_scales: Optional[torch.Tensor] = None
+        super().__init__(train_entries, val_entries, backend, dg_cfg, output_dir)
+        self.unc_config = config
+        self.mask_cache: Dict[str, Optional[torch.Tensor]] = {}
 
-    def _check_m2a_gate(self) -> None:
-        if self.dg_config.depth_semantics_artifact_path:
-            _verify_m2a_artifact(Path(self.dg_config.depth_semantics_artifact_path))
+    def _get_mask_for_entry(self, entry: Dict) -> Optional[torch.Tensor]:
+        if entry.get("sample_id") in self.mask_cache:
+            return self.mask_cache[entry["sample_id"]]
+        path = _resolve_mask_path(entry, self.unc_config.mask_dir)
+        if path is not None:
+            mask = load_specular_mask(path, device=self.device)
+            desired_h, desired_w = entry["height"], entry["width"]
+            if mask.shape != (desired_h, desired_w):
+                mask = mask[:desired_h, :desired_w]
+        else:
+            mask = None
+        self.mask_cache[entry["sample_id"]] = mask
+        return mask
 
     def setup(self) -> None:
         self._check_m2a_gate()
-        super().setup()
+        super(DepthGuidedTrainer, self).setup()
         self.init_scales = self.gaussians.scales.data.clone().detach()
 
     def train_step(self, iter_idx: int) -> Dict[str, float]:
@@ -109,35 +134,39 @@ class DepthGuidedTrainer(BaselineTrainer):
 
         if out.aux.get("depth_semantics") != "metric_meters":
             raise RuntimeError(
-                f"Depth-guided training requires metric depth, "
+                f"Uncertainty training requires metric depth, "
                 f"but got depth_semantics='{out.aux.get('depth_semantics')}'"
             )
 
-        loss_photo = photometric_l1(out.rgb[..., :3], gt_rgb)
+        mask = self._get_mask_for_entry(entry) if self.unc_config.variant in ("h2", "h3") else None
+
+        loss_uw, uw_diag = uncertainty_weighted_photometric_l1(
+            rgb_pred=out.rgb[..., :3],
+            rgb_gt=gt_rgb,
+            alpha=self.unc_config.alpha,
+            w_min=self.unc_config.w_photo_min,
+            mask=mask,
+            mask_boost=self.unc_config.mask_boost,
+        )
+
         loss_depth, depth_diag = depth_l1(
             pred_depth=out.depth,
             gt_depth=gt_depth,
             depth_semantics=out.aux["depth_semantics"],
-            near_m=self.dg_config.depth_near_m,
-            far_m=self.dg_config.depth_far_m,
+            near_m=self.unc_config.depth_near_m,
+            far_m=self.unc_config.depth_far_m,
         )
 
-        reg_fn = REG_REGISTRY.get(self.dg_config.reg_type)
-        if reg_fn is not None and self.init_scales is not None and self.dg_config.lambda_reg > 0:
-            loss_reg = reg_fn(self.gaussians.scales, self.init_scales)
-        else:
-            loss_reg = torch.tensor(0.0, device=self.device)
-
-        loss_total = loss_photo + self.dg_config.lambda_depth * loss_depth + self.dg_config.lambda_reg * loss_reg
+        loss_total = loss_uw + self.unc_config.lambda_depth * loss_depth
         loss_total.backward()
 
         grad_norm_before = 0.0
         grad_norm_after = 0.0
-        if self.dg_config.clip_grad_norm:
+        if self.unc_config.clip_grad_norm:
             params = [p for p in self.gaussians.state_dict().values() if p.grad is not None]
             if params:
                 grad_norm_before = torch.nn.utils.clip_grad_norm_(
-                    params, max_norm=self.dg_config.max_grad_norm
+                    params, max_norm=self.unc_config.max_grad_norm
                 ).item()
             else:
                 grad_norm_before = 0.0
@@ -151,15 +180,15 @@ class DepthGuidedTrainer(BaselineTrainer):
             out.rgb[..., :3].clamp_(0.0, 1.0)
             self.gaussians.scales.data.clamp_(min=1e-5)
             self.gaussians.opacities.data.clamp_(min=-10.0, max=10.0)
+            diff = (out.rgb[..., :3] - gt_rgb).abs().mean()
+            coeff = loss_uw.detach() / (diff + 1e-8)
             psnr_val = self._compute_psnr(out.rgb[..., :3], gt_rgb)
 
-        return {
+        result = {
             "loss_total": loss_total.item(),
-            "photo_loss": loss_photo.item(),
+            "photo_loss_weighted": loss_uw.item(),
             "depth_loss_raw_m": depth_diag["depth_loss_raw_m"].item(),
-            "depth_loss_weighted": (self.dg_config.lambda_depth * loss_depth.detach()).item(),
-            "reg_loss_raw": loss_reg.item(),
-            "reg_loss_weighted": (self.dg_config.lambda_reg * loss_reg.detach()).item(),
+            "depth_loss_weighted": (self.unc_config.lambda_depth * loss_depth.detach()).item(),
             "psnr": psnr_val,
             "depth_rmse_m_raw": depth_diag["depth_rmse_m_raw"].item(),
             "depth_mae_m_raw": depth_diag["depth_mae_m_raw"].item(),
@@ -170,9 +199,15 @@ class DepthGuidedTrainer(BaselineTrainer):
             "n_gaussians": self.gaussians.num_gaussians(),
         }
 
-    def _compute_psnr(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
-        from surgtwin.evaluation.image_metrics import psnr
-        return psnr(pred, gt)
+        for key in ("w_photo_mean", "w_photo_min", "w_photo_max",
+                     "w_photo_p10", "w_photo_p50", "w_photo_p90",
+                     "fraction_w_photo_at_min", "fraction_w_photo_at_one",
+                     "w_photo_p90_minus_p10", "u_photo_mean", "p95_scale"):
+            val = uw_diag.get(key)
+            if val is not None:
+                result[key] = val
+
+        return result
 
     def _run_val(self, iter_idx: int) -> Dict[str, float]:
         self.gaussians.means.requires_grad_(False)
@@ -184,11 +219,14 @@ class DepthGuidedTrainer(BaselineTrainer):
         psnr_list, ssim_list = [], []
         lpips_list = []
         all_depth_reports = []
+        w_photo_stats_list = []
 
         snapshot_dir = self.output_dir / "renders"
         depth_dir = self.output_dir / "depth"
+        unc_dir = self.output_dir / "uncertainty"
         snapshot_dir.mkdir(parents=True, exist_ok=True)
         depth_dir.mkdir(parents=True, exist_ok=True)
+        unc_dir.mkdir(parents=True, exist_ok=True)
 
         for entry in self.val_entries:
             gt_rgb = _load_rgb(entry["left_rgb_path"]).to(self.device)
@@ -206,7 +244,6 @@ class DepthGuidedTrainer(BaselineTrainer):
             pred_rgb = out.rgb[..., :3]
             psnr_list.append(self._compute_psnr(pred_rgb, gt_rgb))
             ssim_list.append(self._compute_ssim(pred_rgb, gt_rgb))
-
             val_score = self._lpips_score(pred_rgb, gt_rgb, self.device)
             if val_score is not None:
                 lpips_list.append(val_score)
@@ -214,14 +251,42 @@ class DepthGuidedTrainer(BaselineTrainer):
             sid = entry["sample_id"]
             self._save_snapshot(pred_rgb, snapshot_dir / f"iter_{iter_idx:06d}_val_{sid}_rgb.png")
 
+            mask = self._get_mask_for_entry(entry) if self.unc_config.variant in ("h2", "h3") else None
+
+            residual = compute_photo_residual(pred_rgb, gt_rgb, detach_pred=True)
+            scale = compute_p95_scale(residual)
+            u_photo = compute_u_photo(residual, scale)
+            if mask is not None:
+                w_photo = compute_w_photo_with_mask(
+                    u_photo, mask, alpha=self.unc_config.alpha,
+                    w_min=self.unc_config.w_photo_min, mask_boost=self.unc_config.mask_boost,
+                )
+            else:
+                w_photo = compute_w_photo(u_photo, alpha=self.unc_config.alpha, w_min=self.unc_config.w_photo_min)
+
+            _save_u_photo_color(u_photo, unc_dir / f"iter_{iter_idx:06d}_val_{sid}_u_photo_color.png")
+            _save_w_photo_color(w_photo, unc_dir / f"iter_{iter_idx:06d}_val_{sid}_w_photo_color.png",
+                                w_min=self.unc_config.w_photo_min)
+
+            _, uw_diag = uncertainty_weighted_photometric_l1(
+                rgb_pred=pred_rgb,
+                rgb_gt=gt_rgb,
+                alpha=self.unc_config.alpha,
+                w_min=self.unc_config.w_photo_min,
+                mask=mask,
+                mask_boost=self.unc_config.mask_boost,
+            )
+
+            w_photo_stats_list.append(uw_diag)
+
             if out.depth is not None and out.aux.get("depth_semantics") == "metric_meters":
                 self._save_snapshot_depth(out.depth, gt_depth, depth_dir, iter_idx, sid)
                 depth_report = geometry_metrics_report(
                     pred_depth=out.depth,
                     gt_depth=gt_depth,
                     depth_semantics=out.aux["depth_semantics"],
-                    near_m=self.dg_config.depth_near_m,
-                    far_m=self.dg_config.depth_far_m,
+                    near_m=self.unc_config.depth_near_m,
+                    far_m=self.unc_config.depth_far_m,
                 )
                 all_depth_reports.append(depth_report)
 
@@ -241,42 +306,36 @@ class DepthGuidedTrainer(BaselineTrainer):
 
         if all_depth_reports:
             for key in ("depth_rmse_m_raw", "depth_mae_m_raw", "abs_rel", "depth_valid_ratio",
-                        "depth_rmse_m_clipped", "depth_mae_m_clipped", "median_aligned_rmse_m"):
+                         "depth_rmse_m_clipped", "depth_mae_m_clipped", "median_aligned_rmse_m"):
                 vals = [r[key] for r in all_depth_reports if key in r]
                 if vals:
                     result[f"val_{key}"] = float(np.mean(vals))
             result["val_depth_semantics"] = "metric_meters"
             result["val_num_depth_samples"] = len(all_depth_reports)
 
+        if w_photo_stats_list:
+            for key in ("w_photo_mean", "w_photo_min", "w_photo_max",
+                         "w_photo_p10", "w_photo_p50", "w_photo_p90",
+                         "fraction_w_photo_at_min", "fraction_w_photo_at_one",
+                         "w_photo_p90_minus_p10", "normalization_mode",
+                         "mask_used", "mask_coverage",
+                         "w_photo_in_mask_mean", "w_photo_out_mask_mean"):
+                vals = [d.get(key) for d in w_photo_stats_list if d.get(key) is not None]
+                if vals:
+                    if isinstance(vals[0], str):
+                        result[f"val_{key}"] = vals[0]
+                    else:
+                        result[f"val_{key}"] = float(np.mean(vals))
+
+            avg_coverage = result.get("val_mask_coverage")
+            if avg_coverage is not None:
+                result["val_mask_effective"] = avg_coverage >= 0.01
+
         return result
-
-    def _save_snapshot_depth(self, pred_depth: torch.Tensor, gt_depth: torch.Tensor,
-                              depth_dir: Path, iter_idx: int, sample_id: str) -> None:
-        np.save(str(depth_dir / f"iter_{iter_idx:06d}_val_{sample_id}_depth.npy"),
-                pred_depth.detach().cpu().numpy())
-        _save_depth_color(pred_depth, depth_dir / f"iter_{iter_idx:06d}_val_{sample_id}_depth_color.png")
-        _save_depth_color(gt_depth, depth_dir / f"iter_{iter_idx:06d}_val_{sample_id}_gt_depth_color.png")
-        error_map = (pred_depth - gt_depth).abs()
-        _save_depth_color(error_map, depth_dir / f"iter_{iter_idx:06d}_val_{sample_id}_depth_error_color.png")
-
-    def _compute_ssim(self, pred: torch.Tensor, gt: torch.Tensor) -> float:
-        from surgtwin.evaluation.image_metrics import ssim
-        return ssim(pred, gt)
-
-    def _lpips_score(self, pred: torch.Tensor, gt: torch.Tensor, device: torch.device):
-        from surgtwin.evaluation.image_metrics import lpips_score
-        return lpips_score(pred, gt, device)
-
-    def _restore_grad(self) -> None:
-        self.gaussians.means.requires_grad_(True)
-        self.gaussians.scales.requires_grad_(True)
-        self.gaussians.quats.requires_grad_(True)
-        self.gaussians.opacities.requires_grad_(True)
-        self.gaussians.colors.requires_grad_(True)
 
     def fit(self) -> Dict:
         self.setup()
-        config = self.dg_config
+        config = self.unc_config
         final_metrics = {}
 
         for i in range(1, config.iterations + 1):
@@ -292,11 +351,9 @@ class DepthGuidedTrainer(BaselineTrainer):
             metrics = {
                 "iter": i,
                 "loss_total": round(step["loss_total"], 6),
-                "photo_loss": round(step["photo_loss"], 6),
+                "photo_loss_weighted": round(step["photo_loss_weighted"], 8),
                 "depth_loss_raw_m": round(step["depth_loss_raw_m"], 8),
                 "depth_loss_weighted": round(step["depth_loss_weighted"], 8),
-                "reg_loss_raw": round(step["reg_loss_raw"], 8),
-                "reg_loss_weighted": round(step["reg_loss_weighted"], 8),
                 "psnr": round(step["psnr"], 4),
                 "depth_rmse_m_raw": round(step["depth_rmse_m_raw"], 6),
                 "depth_mae_m_raw": round(step["depth_mae_m_raw"], 6),
@@ -306,6 +363,13 @@ class DepthGuidedTrainer(BaselineTrainer):
                 "iter_time_s": round(step_time, 4),
                 "vram_gb": round(vram, 3),
             }
+
+            for key in ("w_photo_mean", "w_photo_min", "w_photo_max",
+                         "w_photo_p10", "w_photo_p50", "w_photo_p90",
+                         "fraction_w_photo_at_min", "fraction_w_photo_at_one",
+                         "w_photo_p90_minus_p10", "u_photo_mean", "p95_scale"):
+                if key in step:
+                    metrics[key] = round(step[key], 6)
 
             if config.log_grad_norm:
                 metrics["grad_norm_before_clip"] = round(step["grad_norm_before_clip"], 6)
@@ -319,14 +383,14 @@ class DepthGuidedTrainer(BaselineTrainer):
             if i % config.log_every == 0:
                 msg = (f"iter {i:5d}/{config.iterations}  "
                        f"loss={metrics['loss_total']:.6f}  "
-                       f"photo={metrics['photo_loss']:.6f}  "
+                       f"photo={metrics['photo_loss_weighted']:.6f}  "
                        f"depth={metrics['depth_loss_raw_m']:.6f}  "
-                       f"reg={metrics['reg_loss_raw']:.6f}  "
                        f"psnr={metrics['psnr']:.2f}  "
+                       f"mean_w={metrics.get('w_photo_mean', 0):.4f}  "
                        f"gaussians={metrics['n_gaussians']}  "
                        f"time={metrics['iter_time_s']:.3f}s")
-                if self.dg_config.log_grad_norm:
-                    msg += f"  grad_before={metrics.get('grad_norm_before_clip', 0):.4f}"
+                if config.log_grad_norm:
+                    msg += f"  grad={metrics.get('grad_norm_before_clip', 0):.4f}"
                 print(msg)
 
             if i % config.val_every == 0:
@@ -338,15 +402,18 @@ class DepthGuidedTrainer(BaselineTrainer):
                 if "val_depth_rmse_m_raw" in val_metrics:
                     depth_str = (f"  depth_rmse={val_metrics['val_depth_rmse_m_raw']:.4f}  "
                                  f"depth_mae={val_metrics['val_depth_mae_m_raw']:.4f}")
+                w_str = ""
+                if "val_w_photo_mean" in val_metrics:
+                    w_str = f"  mean_w={val_metrics['val_w_photo_mean']:.4f}"
                 print(f"VAL iter {i}: psnr={val_metrics['val_psnr']:.2f}  "
                       f"ssim={val_metrics['val_ssim']:.4f}  "
-                      f"lpips={lpips_str}{depth_str}")
+                      f"lpips={lpips_str}{depth_str}{w_str}")
 
             if i % config.ckpt_every == 0:
                 self.save(i)
 
         final_metrics["final_loss_total"] = step["loss_total"]
-        final_metrics["final_photo_loss"] = step["photo_loss"]
+        final_metrics["final_photo_loss_weighted"] = step["photo_loss_weighted"]
         final_metrics["n_gaussians"] = step["n_gaussians"]
         val_metrics = self._run_val(config.iterations)
         final_metrics.update(val_metrics)
@@ -355,11 +422,26 @@ class DepthGuidedTrainer(BaselineTrainer):
         final_metrics["split_strategy"] = self.split_strategy
         final_metrics["lambda_depth"] = config.lambda_depth
         final_metrics["lambda_reg"] = config.lambda_reg
-        final_metrics["reg_type"] = config.reg_type
+        final_metrics["alpha"] = config.alpha
+        final_metrics["w_photo_min"] = config.w_photo_min
+        final_metrics["variant"] = config.variant
         final_metrics["clip_grad_norm"] = config.clip_grad_norm
         final_metrics["max_grad_norm"] = config.max_grad_norm
         final_metrics["enable_densification"] = config.enable_densification
         final_metrics["depth_semantics"] = "metric_meters"
+        final_metrics["normalization_mode"] = "p95_detached"
+        final_metrics["run_mode"] = getattr(self.unc_config, "run_mode", "production")
+        final_metrics["gate_eligible"] = final_metrics["run_mode"] == "production"
+        final_metrics["mask_used"] = config.variant in ("h2", "h3")
+        if config.variant in ("h2", "h3"):
+            avg_coverage = val_metrics.get("val_mask_coverage", 0.0)
+            final_metrics["mask_coverage"] = avg_coverage
+            final_metrics["mask_effective"] = avg_coverage >= 0.01
+            if avg_coverage < 0.01:
+                final_metrics["mask_interpretation"] = (
+                    "H2 mask path executed, but mask coverage too low "
+                    "to attribute gains to mask-aware weighting."
+                )
 
         write_json = __import__("surgtwin.training.logging_utils", fromlist=["write_json"]).write_json
         write_json(self.output_dir / "final_metrics.json", final_metrics)
@@ -377,71 +459,97 @@ class DepthGuidedTrainer(BaselineTrainer):
             gaussians=self.gaussians,
             optimizer_state_dict=self.optimizer.state_dict(),
             iteration=iter_idx,
-            config=asdict(self.dg_config),
-            backend_name=self.dg_config.backend,
-            seed=self.dg_config.seed,
+            config=asdict(self.unc_config),
+            backend_name=self.unc_config.backend,
+            seed=self.unc_config.seed,
         )
 
     def _write_report(self, fm: Dict) -> None:
         lines = [
-            "# Depth-Guided Run Report (M2-B)",
+            "# Uncertainty-Weighted Run Report (M3)",
             "",
-            "## 1. Dataset Split (deterministic, seed={})".format(self.dg_config.seed),
-            "- train: Experiment_1 frame 1-6 (n={})".format(len(self.train_entries)),
-            "- val: Experiment_1 frame 7-8 (n={})".format(len(self.val_entries)),
+            f"## 1. Dataset Split (deterministic, seed={self.unc_config.seed})",
+            f"- train: Experiment_1 frame 1-6 (n={len(self.train_entries)})",
+            f"- val: Experiment_1 frame 7-8 (n={len(self.val_entries)})",
             "- split_strategy: " + self.split_strategy,
             "",
             "## 2. Environment",
             "See `environment.json` for full details.",
             "",
             "## 3. Run Summary",
-            "- iterations: {}".format(self.dg_config.iterations),
-            "- initial_loss_total (iter 1): {:.6f}".format(fm.get("initial_loss_total", 0)),
-            "- final_loss_total (iter {}): {:.6f}".format(self.dg_config.iterations, fm.get("final_loss_total", 0)),
-            "- loss_decreased: {}".format(fm.get("loss_decreased", False)),
-            "- n_gaussians (final): {}".format(fm.get("n_gaussians", 0)),
-            "- val_psnr: {:.4f}".format(fm.get("val_psnr", 0)),
-            "- val_ssim: {:.4f}".format(fm.get("val_ssim", 0)),
-            "- val_lpips: {}".format(fm.get("val_lpips", "N/A")),
+            f"- iterations: {self.unc_config.iterations}",
+            f"- variant: {self.unc_config.variant}",
+            f"- initial_loss_total (iter 1): {fm.get('initial_loss_total', 0):.6f}",
+            f"- final_loss_total (iter {self.unc_config.iterations}): {fm.get('final_loss_total', 0):.6f}",
+            f"- loss_decreased: {fm.get('loss_decreased', False)}",
+            f"- n_gaussians (final): {fm.get('n_gaussians', 0)}",
+            f"- val_psnr: {fm.get('val_psnr', 0):.4f}",
+            f"- val_ssim: {fm.get('val_ssim', 0):.4f}",
+            f"- val_lpips: {fm.get('val_lpips', 'N/A')}",
             "",
-            "## 4. Depth Configuration",
-            "- lambda_depth: {}".format(self.dg_config.lambda_depth),
-            "- lambda_reg: {}".format(self.dg_config.lambda_reg),
-            "- reg_type: {}".format(self.dg_config.reg_type),
-            "- depth_near_m: {}".format(self.dg_config.depth_near_m),
-            "- depth_far_m: {}".format(self.dg_config.depth_far_m),
-            "- clip_grad_norm: {}".format(self.dg_config.clip_grad_norm),
-            "- max_grad_norm: {}".format(self.dg_config.max_grad_norm),
-            "- depth_semantics: metric_meters",
-            "- M2-A artifact: {}".format(self.dg_config.depth_semantics_artifact_path),
+            "## 4. Uncertainty Configuration",
+            f"- lambda_depth: {self.unc_config.lambda_depth}",
+            f"- lambda_reg: {self.unc_config.lambda_reg}",
+            f"- alpha: {self.unc_config.alpha}",
+            f"- w_photo_min: {self.unc_config.w_photo_min}",
+            f"- mask_boost: {self.unc_config.mask_boost}",
+            f"- variant: {self.unc_config.variant}",
+            f"- mask_dir: {self.unc_config.mask_dir}",
+            f"- depth_semantics: metric_meters",
             "",
-            "## 4.5 Depth Loss Diagnostics",
+            "## 5. Depth Loss Diagnostics",
         ]
         for key in ("val_depth_rmse_m_raw", "val_depth_rmse_m_clipped",
                      "val_depth_mae_m_raw", "val_depth_mae_m_clipped",
                      "val_abs_rel", "val_depth_valid_ratio",
                      "val_median_aligned_rmse_m"):
             if key in fm:
-                lines.append("- {}: {}".format(key, fm[key]))
+                lines.append(f"- {key}: {fm[key]}")
+        lines.append(f"- num_depth_val_samples: {fm.get('val_num_depth_samples', 0)}")
+        lines.append("")
+        lines.append("## 5.5 Uncertainty Diagnostics")
+        lines.append(f"- normalization_mode: {fm.get('normalization_mode', 'N/A')}")
+        lines.append(f"- alpha: {self.unc_config.alpha}")
+        lines.append(f"- w_photo_min: {self.unc_config.w_photo_min}")
+        if fm.get("val_w_photo_mean") is not None:
+            lines.append(f"- val_w_photo_mean: {fm['val_w_photo_mean']:.4f}")
+            lines.append(f"- val_w_photo_min: {fm['val_w_photo_min']:.4f}")
+            lines.append(f"- val_w_photo_max: {fm['val_w_photo_max']:.4f}")
+            lines.append(f"- val_w_photo_p10: {fm['val_w_photo_p10']:.4f}")
+            lines.append(f"- val_w_photo_p50: {fm['val_w_photo_p50']:.4f}")
+            lines.append(f"- val_w_photo_p90: {fm['val_w_photo_p90']:.4f}")
+            lines.append(f"- val_fraction_w_photo_at_min: {fm['val_fraction_w_photo_at_min']:.4f}")
+            lines.append(f"- val_fraction_w_photo_at_one: {fm['val_fraction_w_photo_at_one']:.4f}")
+            lines.append(f"- val_w_photo_p90_minus_p10: {fm['val_w_photo_p90_minus_p10']:.4f}")
+        lines.append("")
+        lines.append("## 5.6 Mask Effectiveness")
+        lines.append(f"- mask_used: {fm.get('mask_used', False)}")
+        if fm.get("mask_used"):
+            lines.append(f"- mask_coverage: {fm.get('mask_coverage', 0):.4f}")
+            lines.append(f"- mask_effective: {fm.get('mask_effective', False)}")
+            if fm.get("val_w_photo_in_mask_mean") is not None:
+                lines.append(f"- w_photo_in_mask_mean: {fm['val_w_photo_in_mask_mean']:.4f}")
+                lines.append(f"- w_photo_out_mask_mean: {fm['val_w_photo_out_mask_mean']:.4f}")
+            if fm.get("mask_interpretation"):
+                lines.append(f"- interpretation: {fm['mask_interpretation']}")
+        lines.append("")
         lines.extend([
-            "- num_depth_val_samples: {}".format(fm.get("val_num_depth_samples", 0)),
-            "",
-            "## 5. Outputs",
+            "## 6. Outputs",
             "- config.json: yes",
             "- environment.json: yes",
             "- metrics.jsonl: yes",
             "- checkpoints/: yes",
             "- renders/: yes",
             "- depth/: yes",
+            "- uncertainty/: yes",
             "- final_metrics.json: yes",
             "",
-            "## 6. Known Limitations",
-            "- No uncertainty weighting (M3)",
+            "## 7. Known Limitations",
             "- No density control (M4)",
             "- Fixed 20k Gaussians, densification off",
+            "- Learned mapper not included",
             "",
-            "## 7. Next Steps",
-            "- Milestone 3: uncertainty-weighted loss",
+            "## 8. Next Steps",
             "- Milestone 4: multi-criteria density control",
         ])
         report_path = self.output_dir / "report.md"
@@ -469,6 +577,16 @@ class DepthGuidedTrainer(BaselineTrainer):
             pred_d_np = out.depth.detach().cpu().numpy() if out.depth is not None else np.zeros((entry["height"], entry["width"]), dtype=np.float32)
             gt_d_np = gt_depth.cpu().numpy()
 
+            mask = self._get_mask_for_entry(entry) if self.unc_config.variant in ("h2", "h3") else None
+            _, uw_diag = uncertainty_weighted_photometric_l1(
+                rgb_pred=out.rgb[..., :3],
+                rgb_gt=gt_rgb,
+                alpha=self.unc_config.alpha,
+                w_min=self.unc_config.w_photo_min,
+                mask=mask,
+                mask_boost=self.unc_config.mask_boost,
+            )
+
             def _norm_depth(d):
                 valid = (d > 0.02) & (d < 0.30) & np.isfinite(d)
                 if not valid.any():
@@ -480,6 +598,8 @@ class DepthGuidedTrainer(BaselineTrainer):
                 return (norm * 255).astype(np.uint8)
 
             error_map = np.abs(pred_d_np - gt_d_np)
+
+            w_photo_from_np = np.zeros((entry["height"], entry["width"]), dtype=np.float32)
             panels = [
                 cv2.cvtColor(gt_rgb_np, cv2.COLOR_RGB2BGR),
                 cv2.cvtColor(pred_rgb_np, cv2.COLOR_RGB2BGR),

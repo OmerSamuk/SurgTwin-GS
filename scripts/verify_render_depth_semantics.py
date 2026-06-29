@@ -5,7 +5,7 @@ from pathlib import Path
 
 
 def main():
-    output_dir = Path("outputs/runs/depth_semantics_m2a")
+    output_dir = Path("outputs/runs/m2a_gate")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     synthetic_json = output_dir / "synthetic_verification.json"

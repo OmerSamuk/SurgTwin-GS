@@ -9,6 +9,7 @@ from surgtwin.gaussian.backend_gsplat import GsplatBackend
 from surgtwin.training.depth_guided_config import DepthGuidedConfig
 from surgtwin.training.depth_guided_trainer import DepthGuidedTrainer
 from surgtwin.training.logging_utils import write_json, collect_environment
+from surgtwin.training.manifest_snapshot import write_manifest_snapshot
 
 
 def main():
@@ -40,7 +41,7 @@ def main():
     parser.add_argument("--depth_far_m", type=float, default=0.30,
                         help="Far depth range in meters (default: 0.30)")
     parser.add_argument("--depth_semantics_artifact", type=str,
-                        default="outputs/runs/depth_semantics_m2a/final_gate_decision.json",
+                        default="outputs/runs/m2a_gate/final_gate_decision.json",
                         help="Path to M2-A gate decision JSON")
     parser.add_argument("--no_clip_grad", action="store_true",
                         help="Disable gradient clipping")
@@ -97,6 +98,17 @@ def main():
 
     final_metrics = trainer.fit()
     trainer.save_side_by_side_panels()
+
+    write_manifest_snapshot(
+        output_dir=output_dir,
+        manifest_path=Path(args.manifest),
+        entries=entries,
+        train_entries=train,
+        val_entries=val,
+        extra={"split_strategy": trainer.split_strategy,
+               "lambda_depth": config.lambda_depth,
+               "lambda_reg": config.lambda_reg},
+    )
 
     print("\n=== M2-B Depth-Guided Training Complete ===")
     print(f"  initial_loss_total: {final_metrics['initial_loss_total']:.6f}")

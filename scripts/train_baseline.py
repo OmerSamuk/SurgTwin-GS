@@ -8,6 +8,7 @@ from surgtwin.data.manifest import load_manifest, filter_by_split, validate_mani
 from surgtwin.gaussian.backend_gsplat import GsplatBackend
 from surgtwin.training.config import BaselineConfig
 from surgtwin.training.trainer import BaselineTrainer
+from surgtwin.training.manifest_snapshot import write_manifest_snapshot
 
 
 def main():
@@ -60,6 +61,15 @@ def main():
     )
 
     final_metrics = trainer.fit()
+
+    write_manifest_snapshot(
+        output_dir=output_dir,
+        manifest_path=Path(args.manifest),
+        entries=entries,
+        train_entries=train,
+        val_entries=val,
+        extra={"split_strategy": trainer.split_strategy},
+    )
 
     print("\n=== Milestone 1 Complete ===")
     print(f"  initial_loss: {final_metrics['initial_loss']:.6f}")
