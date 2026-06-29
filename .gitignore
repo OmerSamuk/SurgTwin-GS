@@ -18,8 +18,11 @@ outputs/
 scripts/_debug/
 scripts/_setup/
 
-# Obsidian log exports
-diary/logs/
+# Obsidian vault artifacts (not part of public repo)
+diary/
+expert-feedback/
+planning/
+docs/audit/
 
 .env
 *.log
