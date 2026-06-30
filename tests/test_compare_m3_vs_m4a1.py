@@ -144,13 +144,13 @@ def test_vram_tier_none():
 
 def test_delta_higher_better():
     result = _delta(20.0, 25.0, higher_is_better=True)
-    assert "▲" in result
+    assert "+" in result
     assert "+5.0000" in result
 
 
 def test_delta_lower_better():
     result = _delta(0.0364, 0.0280, higher_is_better=False)
-    assert "▲" in result
+    assert "+" in result
     assert "-0.0084" in result
 
 

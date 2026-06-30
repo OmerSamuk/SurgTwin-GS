@@ -93,6 +93,13 @@ def main():
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--ckpt_every", type=int, default=500)
 
+    parser.add_argument("--lr_means", type=float, default=1e-3)
+    parser.add_argument("--lr_scales", type=float, default=1e-5)
+    parser.add_argument("--lr_quats", type=float, default=1e-3)
+    parser.add_argument("--lr_opacities", type=float, default=5e-2)
+    parser.add_argument("--lr_colors", type=float, default=2.5e-3)
+    parser.add_argument("--warmup_iters", type=int, default=0)
+
     parser.add_argument("--variant", type=str, default="h1",
                         choices=["h1", "h2", "h3"],
                         help="M3 variant: h1=residual only, h2=mask-aware, h3=low depth")
@@ -157,6 +164,12 @@ def main():
         val_every=args.val_every,
         log_every=args.log_every,
         ckpt_every=args.ckpt_every,
+        lr_means=args.lr_means,
+        lr_scales=args.lr_scales,
+        lr_quats=args.lr_quats,
+        lr_opacities=args.lr_opacities,
+        lr_colors=args.lr_colors,
+        warmup_iters=args.warmup_iters,
         variant=args.variant,
         lambda_depth=args.lambda_depth,
         lambda_reg=args.lambda_reg,

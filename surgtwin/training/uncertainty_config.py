@@ -29,6 +29,7 @@ class UncertaintyConfig:
     clip_grad_norm: bool = True
     max_grad_norm: float = 1.0
     log_grad_norm: bool = True
+    warmup_iters: int = 0
 
     mask_dir: Optional[str] = None
     depth_semantics_artifact_path: Optional[str] = None

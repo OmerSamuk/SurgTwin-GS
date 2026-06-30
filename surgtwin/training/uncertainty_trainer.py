@@ -93,6 +93,20 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         super().__init__(train_entries, val_entries, backend, dg_cfg, output_dir)
         self.unc_config = config
         self.mask_cache: Dict[str, Optional[torch.Tensor]] = {}
+        self._warmup_base_lrs: Optional[List[float]] = None
+
+    def _init_warmup(self) -> None:
+        if self.unc_config.warmup_iters > 0 and self.optimizer is not None:
+            self._warmup_base_lrs = [pg["lr"] for pg in self.optimizer.param_groups]
+            factor = 1.0 / self.unc_config.warmup_iters
+            for pg in self.optimizer.param_groups:
+                pg["lr"] = pg["lr"] * factor
+
+    def _apply_warmup(self, iter_idx: int) -> None:
+        if self._warmup_base_lrs is not None and self.optimizer is not None:
+            factor = min(1.0, iter_idx / self.unc_config.warmup_iters)
+            for pg, base_lr in zip(self.optimizer.param_groups, self._warmup_base_lrs):
+                pg["lr"] = base_lr * factor
 
     def _get_mask_for_entry(self, entry: Dict) -> Optional[torch.Tensor]:
         if entry.get("sample_id") in self.mask_cache:
@@ -112,6 +126,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         self._check_m2a_gate()
         super(DepthGuidedTrainer, self).setup()
         self.init_scales = self.gaussians.scales.data.clone().detach()
+        self._init_warmup()
 
     def train_step(self, iter_idx: int) -> Dict[str, float]:
         if self.gaussians is None or self.optimizer is None:
@@ -337,8 +352,11 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         self.setup()
         config = self.unc_config
         final_metrics = {}
+        clip_active_count = 0
+        clip_total_count = 0
 
         for i in range(1, config.iterations + 1):
+            self._apply_warmup(i)
             t0 = time.time()
             step = self.train_step(i)
             step_time = time.time() - t0
@@ -375,6 +393,12 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 metrics["grad_norm_before_clip"] = round(step["grad_norm_before_clip"], 6)
                 metrics["grad_norm_after_clip"] = round(step["grad_norm_after_clip"], 6)
 
+            clip_total_count += 1
+            if config.clip_grad_norm and step["grad_norm_before_clip"] > config.max_grad_norm:
+                clip_active_count += 1
+            clip_active_ratio = clip_active_count / clip_total_count if clip_total_count > 0 else 0.0
+            metrics["clip_active_ratio"] = round(clip_active_ratio, 4)
+
             self.metrics_logger.log(metrics)
 
             if i == 1:
@@ -389,8 +413,12 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                        f"mean_w={metrics.get('w_photo_mean', 0):.4f}  "
                        f"gaussians={metrics['n_gaussians']}  "
                        f"time={metrics['iter_time_s']:.3f}s")
+                if config.warmup_iters > 0:
+                    factor = min(1.0, i / config.warmup_iters)
+                    msg += f"  lr_scale={factor:.3f}"
                 if config.log_grad_norm:
                     msg += f"  grad={metrics.get('grad_norm_before_clip', 0):.4f}"
+                    msg += f"  clip_ratio={metrics.get('clip_active_ratio', 0):.3f}"
                 print(msg)
 
             if i % config.val_every == 0:
@@ -427,6 +455,8 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         final_metrics["variant"] = config.variant
         final_metrics["clip_grad_norm"] = config.clip_grad_norm
         final_metrics["max_grad_norm"] = config.max_grad_norm
+        final_metrics["clip_active_ratio"] = round(clip_active_ratio, 4)
+        final_metrics["warmup_iters"] = config.warmup_iters
         final_metrics["enable_densification"] = config.enable_densification
         final_metrics["depth_semantics"] = "metric_meters"
         final_metrics["normalization_mode"] = "p95_detached"
