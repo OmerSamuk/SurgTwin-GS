@@ -46,7 +46,7 @@ class GsplatBackend(RendererBackend):
             device = gd["means"].device
             means = torch.tensor([[[[0.0, 0.0, 2.0]]]], dtype=torch.float32, device=device)
             quats = torch.tensor([[[[1.0, 0.0, 0.0, 0.0]]]], dtype=torch.float32, device=device)
-            scales = torch.tensor([[[[0.01, 0.01, 0.01]]]], dtype=torch.float32, device=device)
+            scales = torch.tensor([[[[0.5, 0.5, 0.5]]]], dtype=torch.float32, device=device)
             opacities = torch.tensor([[[1.0]]], dtype=torch.float32, device=device)
             colors = torch.tensor([[[[0.5, 0.5, 0.5]]]], dtype=torch.float32, device=device)
 
