@@ -600,6 +600,17 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         final_metrics["clip_active_ratio"] = round(clip_active_ratio, 4)
         final_metrics["warmup_iters"] = config.warmup_iters
         final_metrics["enable_densification"] = config.enable_densification
+        final_metrics["densify_from_iter"] = config.densify_from_iter
+        final_metrics["densify_every"] = config.densify_every
+        final_metrics["densify_until_iter"] = config.densify_until_iter
+        final_metrics["densify_depth_residual_threshold"] = config.densify_depth_residual_threshold
+        final_metrics["densify_w_photo_threshold"] = config.densify_w_photo_threshold
+        final_metrics["densify_max_clone_per_step"] = config.densify_max_clone_per_step
+        final_metrics["densify_max_clone_fraction"] = config.densify_max_clone_fraction
+        final_metrics["densify_max_gaussians"] = config.densify_max_gaussians
+        final_metrics["prune_min_opacity"] = config.prune_min_opacity
+        final_metrics["max_prune_fraction_per_step"] = config.max_prune_fraction_per_step
+        final_metrics["clone_offset_scale_factor"] = config.clone_offset_scale_factor
         final_metrics["n_gaussians_initial"] = n_gaussians_initial
         final_metrics["n_gaussians_final"] = self.gaussians.num_gaussians()
         final_metrics["gaussian_growth_ratio"] = round(
