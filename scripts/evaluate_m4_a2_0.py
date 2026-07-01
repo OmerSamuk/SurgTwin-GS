@@ -250,7 +250,7 @@ def main():
         print(f"FAIL: iter1/iter2 metrics not found in {metrics_path}")
         sys.exit(2)
 
-    gate = compute_gate(fm, early, cfg, run_dir, allow_ablation=args.allow_ablation)
+    gate = compute_gate(fm, early, merged_cfg, run_dir, allow_ablation=args.allow_ablation)
     exit_code = 0 if gate["status"] == "PASS" else 1
     _write_and_report(gate, run_dir, args.output_dir)
     sys.exit(exit_code)
