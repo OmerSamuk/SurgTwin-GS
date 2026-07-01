@@ -1,4 +1,5 @@
 import json
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -255,3 +256,50 @@ def test_diagnostic_fields_present():
     assert gate["clip_health"] == "clip_bound"
     assert gate["gate_eligible_run_mode"] == "production"
     assert gate["m2a_gate_confirmed"] == "PASS"
+
+
+# ---------------------------------------------------------------------------
+# CLI-level: INVALID_FOR_GATE
+# ---------------------------------------------------------------------------
+
+
+def _write_run_dir(base, config, final_metrics, early_losses):
+    """Write a minimal run directory with config.json, final_metrics.json, metrics.jsonl."""
+    (base / "config.json").write_text(json.dumps(config))
+    (base / "final_metrics.json").write_text(json.dumps(final_metrics))
+    lines = "\n".join(
+        json.dumps({"iter": i, "loss_total": loss})
+        for i, loss in enumerate(early_losses, start=1)
+    )
+    (base / "metrics.jsonl").write_text(lines)
+
+
+def test_invalid_config_cli_writes_gate_and_exits_2():
+    """50K config → evaluator writes gate JSON with INVALID_FOR_GATE, exit code 2."""
+    cfg = dict(_VALID_CONFIG)
+    cfg["init_num_points"] = 50000
+    fm = _make_final_metrics()
+    early = [0.036] * 10
+
+    with tempfile.TemporaryDirectory() as tmp:
+        run_dir = Path(tmp) / "run"
+        run_dir.mkdir()
+        _write_run_dir(run_dir, cfg, fm, early)
+
+        evaluator = str(Path(__file__).resolve().parent.parent / "scripts" / "evaluate_m4_a2_0.py")
+        result = subprocess.run(
+            [sys.executable, evaluator, "--run_dir", str(run_dir)],
+            capture_output=True, text=True
+        )
+
+        assert result.returncode == 2, f"expected exit 2, got {result.returncode}: {result.stderr}"
+
+        gate_path = run_dir / "m4_a2_0_gate.json"
+        assert gate_path.exists(), "gate JSON not written"
+        gate = json.loads(gate_path.read_text())
+        assert gate["status"] == "INVALID_FOR_GATE"
+        assert gate["config_valid"] is False
+        reasons = " ".join(gate["blocking_reasons"])
+        assert "init_num_points" in reasons
+        # Ensure no KeyError in _write_and_report output
+        assert "Status: INVALID_FOR_GATE" in result.stdout

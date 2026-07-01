@@ -253,22 +253,34 @@ def _write_and_report(gate, run_dir, output_dir_arg):
 
     print("=== M4-A2-0 Smoke Gate ===")
     print(f"  Status: {gate['status']}")
-    print(f"  loss_decreased: {gate['loss_decreased']}")
+    ld = gate.get("loss_decreased", "N/A")
+    if isinstance(ld, bool):
+        print(f"  loss_decreased: {ld}")
     jr = gate.get("iter2_jump_ratio")
     if jr is not None:
         print(f"  iter2_jump_ratio: {jr:.3f} (threshold {CATASTROPHIC_JUMP_RATIO})")
-        print(f"  min_recovery_loss: {gate['min_loss_iter2_to_iter10']:.5f}")
-        print(f"  early_recovery_pass: {gate['early_recovery_pass']}")
-        print(f"  unrecovered_jump_fail: {gate['unrecovered_jump_fail']}")
-    print(f"  val_PSNR: {gate['val_psnr']:.2f} dB (threshold {PSNR_THRESHOLD} dB, "
-          f"delta {gate.get('psnr_delta', 0):+.2f})")
-    rmse = gate.get('val_depth_rmse_m_raw', float('nan'))
-    print(f"  val_depth_RMSE: {rmse:.4f} m (threshold {DEPTH_RMSE_THRESHOLD} m, "
-          f"delta {gate.get('depth_rmse_delta', 0):+.4f})")
-    print(f"  clip_active_ratio: {gate.get('clip_active_ratio', 'N/A')} "
-          f"({gate.get('clip_health', 'unknown')})")
-    print(f"  warmup_iters: {gate['warmup_iters']}")
-    print(f"  densification_off: {gate['densification_off']}")
+        mrl = gate.get("min_loss_iter2_to_iter10")
+        if mrl is not None:
+            print(f"  min_recovery_loss: {mrl:.5f}")
+        print(f"  early_recovery_pass: {gate.get('early_recovery_pass', 'N/A')}")
+        print(f"  unrecovered_jump_fail: {gate.get('unrecovered_jump_fail', 'N/A')}")
+    psnr = gate.get("val_psnr")
+    if psnr is not None:
+        print(f"  val_PSNR: {psnr:.2f} dB (threshold {PSNR_THRESHOLD} dB, "
+              f"delta {gate.get('psnr_delta', 0):+.2f})")
+    rmse = gate.get('val_depth_rmse_m_raw')
+    if rmse is not None:
+        print(f"  val_depth_RMSE: {rmse:.4f} m (threshold {DEPTH_RMSE_THRESHOLD} m, "
+              f"delta {gate.get('depth_rmse_delta', 0):+.4f})")
+    capr = gate.get('clip_active_ratio', 'N/A')
+    if capr != 'N/A' or 'clip_health' in gate:
+        print(f"  clip_active_ratio: {capr} ({gate.get('clip_health', 'unknown')})")
+    wi = gate.get("warmup_iters")
+    if wi is not None:
+        print(f"  warmup_iters: {wi}")
+    do = gate.get("densification_off")
+    if do is not None:
+        print(f"  densification_off: {do}")
     mar = gate.get("median_aligned_rmse_m")
     if mar is not None:
         print(f"  median_aligned_RMSE (diagnostic): {mar:.4f} m")
