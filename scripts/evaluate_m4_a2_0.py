@@ -219,9 +219,20 @@ def main():
     with open(final_metrics_path) as f:
         fm = json.load(f)
 
+    # Merge config.json + final_metrics.json for config guard
+    # (BaselineTrainer.__init__ overwrites config.json with 13 BaselineConfig fields;
+    #  final_metrics.json contains the full UncertaintyConfig fields set by
+    #  UncertaintyTrainer.fit.)
+    merged_cfg = dict(cfg)
+    for k in REQUIRED_CONFIG:
+        if k not in merged_cfg and k in fm:
+            merged_cfg[k] = fm[k]
+    # Also add run_mode for gate_eligible check
+    merged_cfg.setdefault("run_mode", fm.get("run_mode"))
+
     # --- Config Guard ---
     if not args.allow_ablation:
-        guard = validate_m4_a2_0_config(cfg)
+        guard = validate_m4_a2_0_config(merged_cfg)
         if not guard["config_valid"]:
             gate = {
                 "status": "INVALID_FOR_GATE",
