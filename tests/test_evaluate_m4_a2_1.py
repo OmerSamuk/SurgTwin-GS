@@ -92,8 +92,8 @@ def test_full_success():
     assert gate["status"] == "FULL_SUCCESS"
     assert gate["growth_occurred"]
     assert gate["clone_happened"]
-    assert gate["psnr_pass"]
-    assert gate["depth_rmse_pass"]
+    assert gate["psnr_full"]
+    assert gate["depth_full"]
     assert gate["loss_decreased"]
 
 
@@ -109,7 +109,7 @@ def test_full_success_more_gaussians():
 # ---------------------------------------------------------------------------
 
 def test_partial_positive_depth_marginal():
-    fm = _make_fm({"val_depth_rmse_m_raw": 0.035})
+    fm = _make_fm({"val_depth_rmse_m_raw": 0.037})
     early = _make_early()
     gate = compute_gate(fm, early, _VALID_CONFIG)
     assert gate["status"] == "SERV_CT_PARTIAL_POSITIVE"
@@ -120,7 +120,7 @@ def test_partial_positive_depth_marginal():
 
 
 def test_partial_positive_psnr_marginal():
-    fm = _make_fm({"val_psnr": 18.0})
+    fm = _make_fm({"val_psnr": 20.05})
     early = _make_early()
     gate = compute_gate(fm, early, _VALID_CONFIG)
     assert gate["status"] == "SERV_CT_PARTIAL_POSITIVE"
@@ -128,11 +128,33 @@ def test_partial_positive_psnr_marginal():
 
 
 def test_partial_positive_both_marginal():
-    fm = _make_fm({"val_psnr": 18.0, "val_depth_rmse_m_raw": 0.040})
+    fm = _make_fm({"val_psnr": 20.05, "val_depth_rmse_m_raw": 0.037})
     early = _make_early()
     gate = compute_gate(fm, early, _VALID_CONFIG)
     assert gate["status"] == "SERV_CT_PARTIAL_POSITIVE"
     assert len(gate["marginal_notes"]) == 2
+
+
+def test_partial_psnr_below_partial_threshold_negative():
+    fm = _make_fm({"val_psnr": 19.5})
+    early = _make_early()
+    gate = compute_gate(fm, early, _VALID_CONFIG)
+    assert gate["status"] == "CONTROLLED_NEGATIVE"
+
+
+def test_partial_depth_above_partial_threshold_negative():
+    fm = _make_fm({"val_depth_rmse_m_raw": 0.045})
+    early = _make_early()
+    gate = compute_gate(fm, early, _VALID_CONFIG)
+    assert gate["status"] == "CONTROLLED_NEGATIVE"
+
+
+def test_partial_positive_no_clones_negative():
+    fm = _make_fm({"total_cloned": 0})
+    early = _make_early()
+    gate = compute_gate(fm, early, _VALID_CONFIG)
+    assert gate["status"] == "CONTROLLED_NEGATIVE"
+    assert any("total_cloned = 0" in r for r in gate["blocking_reasons"])
 
 
 # ---------------------------------------------------------------------------
@@ -247,6 +269,10 @@ def test_cli_full_success_exit_0():
             "\n".join(json.dumps(early[k]) for k in sorted(early)) + "\n"
         )
         (run_dir / "final_metrics.json").write_text(json.dumps(_make_fm()))
+        # Create densification_log.jsonl with enough entries for logs_complete=True
+        dens_lines = "\n".join(json.dumps({"iter": 200 + j * 100, "n_cloned": 2000})
+                               for j in range(3))
+        (run_dir / "densification_log.jsonl").write_text(dens_lines + "\n")
         result = subprocess.run(
             [sys.executable, str(Path("scripts/evaluate_m4_a2_1.py")),
              f"--run_dir={run_dir}"],
@@ -266,7 +292,7 @@ def test_cli_partial_positive_exit_1():
         early = {1: {"iter": 1, "loss_total": 0.05}, 2: {"iter": 2, "loss_total": 0.045}}
         lines = "\n".join(json.dumps(early[k]) for k in sorted(early))
         (run_dir / "metrics.jsonl").write_text(lines + "\n")
-        fm = _make_fm({"val_psnr": 18.0, "val_depth_rmse_m_raw": 0.040})
+        fm = _make_fm({"val_psnr": 20.05, "val_depth_rmse_m_raw": 0.037})
         (run_dir / "final_metrics.json").write_text(json.dumps(fm))
         result = subprocess.run(
             [sys.executable, str(Path("scripts/evaluate_m4_a2_1.py")),

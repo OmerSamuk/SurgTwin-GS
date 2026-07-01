@@ -154,6 +154,8 @@ def main():
                         help="Opacity threshold (sigmoid space) for prune candidates")
     parser.add_argument("--max_prune_fraction_per_step", type=float, default=0.05,
                         help="Max fraction of Gaussians pruned per step")
+    parser.add_argument("--clone_offset_scale_factor", type=float, default=0.25,
+                        help="Clone offset magnitude as fraction of per-Gaussian scale mean")
 
     args = parser.parse_args()
 
@@ -215,6 +217,7 @@ def main():
         densify_max_gaussians=args.densify_max_gaussians,
         prune_min_opacity=args.prune_min_opacity,
         max_prune_fraction_per_step=args.max_prune_fraction_per_step,
+        clone_offset_scale_factor=args.clone_offset_scale_factor,
     )
 
     backend = GsplatBackend()

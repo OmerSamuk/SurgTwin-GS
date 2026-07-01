@@ -3,20 +3,39 @@ import json
 import sys
 from pathlib import Path
 
-PSNR_THRESHOLD = 19.5
-DEPTH_RMSE_THRESHOLD = 0.030
+# --- Onaylanan M4-A2-1 gate eşikleri (expert-answer-17) ---
+PSNR_FULL_SUCCESS = 20.20
+PSNR_PARTIAL_POSITIVE = 20.0
+DEPTH_RMSE_FULL_SUCCESS = 0.0364
+DEPTH_RMSE_PARTIAL_POSITIVE = 0.038
 CATASTROPHIC_JUMP_RATIO = 1.5
 
+# --- Onaylanan config guard (expert-answer-17) ---
 REQUIRED_CONFIG = {
+    "init_num_points": 20000,
     "enable_densification": True,
-    "iterations": 500,
+    "iterations": 1000,
     "warmup_iters": 200,
     "lr_opacities": 1e-2,
-    "max_grad_norm": 1.5,
+    "max_grad_norm": 2.0,
     "variant": "h1",
     "lambda_depth": 0.2,
     "lambda_reg": 0.0,
+    "densify_from_iter": 200,
+    "densify_every": 100,
+    "densify_until_iter": 800,
+    "densify_depth_residual_threshold": 0.02,
+    "densify_w_photo_threshold": 0.3,
+    "densify_max_clone_per_step": 5000,
+    "densify_max_clone_fraction": 0.15,
+    "densify_max_gaussians": 50000,
+    "prune_min_opacity": 0.005,
+    "max_prune_fraction_per_step": 0.05,
+    "clone_offset_scale_factor": 0.25,
 }
+
+# --- Büyüme kontrolü için makul üst sınır ---
+GROWTH_CONTROLLED_MAX_RATIO = 3.0
 
 
 def validate_m4_a2_1_config(cfg):
@@ -50,7 +69,18 @@ def _load_early_metrics(metrics_path):
     return early
 
 
-def compute_gate(fm, early_metrics, config):
+def _check_logs_complete(run_dir, dens_steps_count):
+    """densification_log.jsonl var ve satır sayısı >= densification_steps_count."""
+    log_path = run_dir / "densification_log.jsonl"
+    if not log_path.exists():
+        return False, "densification_log.jsonl not found"
+    n_lines = sum(1 for _ in log_path.open())
+    if n_lines < dens_steps_count:
+        return False, f"densification_log.jsonl has {n_lines} entries, expected >= {dens_steps_count}"
+    return True, ""
+
+
+def compute_gate(fm, early_metrics, config, run_dir=None):
     iter1_loss = early_metrics[1]["loss_total"] if 1 in early_metrics else None
     iter2_loss = early_metrics[2]["loss_total"] if 2 in early_metrics else None
     losses_2_to_10 = [early_metrics[i]["loss_total"]
@@ -70,9 +100,7 @@ def compute_gate(fm, early_metrics, config):
     )
 
     psnr = fm.get("val_psnr", 0.0)
-    psnr_pass = psnr >= PSNR_THRESHOLD
     depth_rmse = fm.get("val_depth_rmse_m_raw", float("inf"))
-    depth_rmse_pass = depth_rmse <= DEPTH_RMSE_THRESHOLD
 
     enable_densification = fm.get("enable_densification", False)
     n_initial = fm.get("n_gaussians_initial", 0)
@@ -85,21 +113,39 @@ def compute_gate(fm, early_metrics, config):
 
     growth_occurred = n_final > n_initial
     clone_happened = total_cloned > 0
+    growth_controlled = (
+        growth_occurred
+        and not max_hit
+        and growth_ratio <= GROWTH_CONTROLLED_MAX_RATIO
+    )
+
+    logs_complete = True
+    logs_note = ""
+    if run_dir is not None:
+        logs_complete, logs_note = _check_logs_complete(run_dir, dens_steps)
+
+    psnr_full = psnr >= PSNR_FULL_SUCCESS
+    psnr_partial = psnr >= PSNR_PARTIAL_POSITIVE
+    depth_full = depth_rmse <= DEPTH_RMSE_FULL_SUCCESS
+    depth_partial = depth_rmse <= DEPTH_RMSE_PARTIAL_POSITIVE
 
     gate = {
         "config_valid": True,
-        "label": "M4-A2-1 Gateless Controlled Test — No Entry to Upper Gateline",
+        "label": "M4-A2-1 Densification Controlled Test",
         "project_line": "SERV-CT",
         "densification_enabled": enable_densification,
         "n_gaussians_initial": n_initial,
         "n_gaussians_final": n_final,
         "gaussian_growth_ratio": growth_ratio,
         "growth_occurred": growth_occurred,
+        "growth_controlled": growth_controlled,
         "clone_happened": clone_happened,
         "densification_steps_count": dens_steps,
         "total_cloned": total_cloned,
         "total_pruned": total_pruned,
         "max_gaussians_hit": max_hit,
+        "logs_complete": logs_complete,
+        "logs_note": logs_note,
         "iter1_loss": iter1_loss,
         "iter2_loss": iter2_loss,
         "iter2_jump_ratio": round(iter2_jump_ratio, 4) if iter2_jump_ratio is not None else None,
@@ -108,11 +154,15 @@ def compute_gate(fm, early_metrics, config):
         "unrecovered_jump_fail": unrecovered_jump_fail,
         "loss_decreased": loss_decreased,
         "val_psnr": psnr,
-        "psnr_threshold": PSNR_THRESHOLD,
-        "psnr_pass": psnr_pass,
+        "psnr_full_success_threshold": PSNR_FULL_SUCCESS,
+        "psnr_partial_positive_threshold": PSNR_PARTIAL_POSITIVE,
+        "psnr_full": psnr_full,
+        "psnr_partial": psnr_partial,
         "val_depth_rmse_m_raw": depth_rmse,
-        "depth_rmse_threshold": DEPTH_RMSE_THRESHOLD,
-        "depth_rmse_pass": depth_rmse_pass,
+        "depth_rmse_full_success_threshold": DEPTH_RMSE_FULL_SUCCESS,
+        "depth_rmse_partial_positive_threshold": DEPTH_RMSE_PARTIAL_POSITIVE,
+        "depth_full": depth_full,
+        "depth_partial": depth_partial,
         "val_ssim": fm.get("val_ssim"),
         "val_lpips": fm.get("val_lpips"),
         "val_depth_mae_m_raw": fm.get("val_depth_mae_m_raw"),
@@ -120,54 +170,82 @@ def compute_gate(fm, early_metrics, config):
         "median_aligned_rmse_m": fm.get("val_median_aligned_rmse_m"),
     }
 
-    # --- 3-tier gate decision ---
-    blocking = []
+    # --- 3-tier gate decision (expert-answer-17 karar ağacı) ---
+    full_success = (
+        enable_densification
+        and psnr_full
+        and depth_full
+        and loss_decreased
+        and not unrecovered_jump_fail
+        and clone_happened
+        and growth_controlled
+        and logs_complete
+    )
 
-    if not enable_densification:
-        blocking.append("enable_densification=False, expected True")
-    if not growth_occurred:
-        blocking.append(f"n_gaussians_final ({n_final}) <= n_gaussians_initial ({n_initial})")
-    if not clone_happened:
-        blocking.append("total_cloned = 0, no clones produced")
-    if not loss_decreased:
-        blocking.append("loss_decreased=False, expected True")
-    if unrecovered_jump_fail:
-        blocking.append(
-            f"unrecovered_jump_fail: iter2_jump_ratio={iter2_jump_ratio:.2f}"
-        )
+    partial_positive = (
+        enable_densification
+        and psnr_partial
+        and depth_partial
+        and loss_decreased
+        and not unrecovered_jump_fail
+        and growth_occurred
+        and growth_controlled
+        and clone_happened
+    )
 
-    if len(blocking) > 0:
-        gate["status"] = "CONTROLLED_NEGATIVE"
-        gate["blocking_reasons"] = blocking
-        gate["recommendation"] = (
-            "M4-A2-1 controlled negative. Densification did not execute as expected. "
-            "Do NOT close SERV-CT line positively. Review densification config, render output, "
-            "or data pipeline. Expert intervention required."
-        )
-        return gate
-
-    depth_ok = depth_rmse_pass
-    psnr_ok = psnr_pass
-
-    if depth_ok and psnr_ok:
+    if full_success:
         gate["status"] = "FULL_SUCCESS"
         gate["recommendation"] = (
-            "M4-A2-1 full success. Densification ran, Gaussians grew, "
-            f"depth RMSE {depth_rmse:.4f}m and PSNR {psnr:.2f}dB meet thresholds. "
+            "M4-A2-1 full success. Densification ran, Gaussians grew in controlled range, "
+            f"depth RMSE {depth_rmse:.4f}m <= {DEPTH_RMSE_FULL_SUCCESS}m and "
+            f"PSNR {psnr:.2f}dB >= {PSNR_FULL_SUCCESS}dB. "
             "SERV-CT line may be considered complete contingent on expert review."
         )
-    else:
-        partial_notes = []
-        if not depth_ok:
-            partial_notes.append(f"depth_rmse {depth_rmse:.4f}m > {DEPTH_RMSE_THRESHOLD}m")
-        if not psnr_ok:
-            partial_notes.append(f"psnr {psnr:.2f}dB < {PSNR_THRESHOLD}dB")
+    elif partial_positive:
         gate["status"] = "SERV_CT_PARTIAL_POSITIVE"
-        gate["marginal_notes"] = partial_notes
+        marginal_notes = []
+        if not psnr_full:
+            marginal_notes.append(f"psnr {psnr:.2f}dB < {PSNR_FULL_SUCCESS}dB (full threshold)")
+        if not depth_full:
+            marginal_notes.append(f"depth_rmse {depth_rmse:.4f}m > {DEPTH_RMSE_FULL_SUCCESS}m (full threshold)")
+        if not logs_complete:
+            marginal_notes.append(f"logs incomplete: {logs_note}")
+        gate["marginal_notes"] = marginal_notes
         gate["recommendation"] = (
             "M4-A2-1 partial positive. Densification mechanics executed (Gaussians grew, "
-            f"{total_cloned} cloned, {total_pruned} pruned) but metric thresholds not fully met. "
+            f"{total_cloned} cloned, {total_pruned} pruned) and metrics meet partial thresholds "
+            f"(PSNR >= {PSNR_PARTIAL_POSITIVE}, RMSE <= {DEPTH_RMSE_PARTIAL_POSITIVE}). "
             "Consider expert review for SERV-CT line closure with caveats."
+        )
+    else:
+        gate["status"] = "CONTROLLED_NEGATIVE"
+        blocking = []
+        if not enable_densification:
+            blocking.append("enable_densification=False, expected True")
+        if not psnr_partial:
+            blocking.append(f"psnr {psnr:.2f}dB < {PSNR_PARTIAL_POSITIVE}dB (partial threshold)")
+        if not depth_partial:
+            blocking.append(f"depth_rmse {depth_rmse:.4f}m > {DEPTH_RMSE_PARTIAL_POSITIVE}m (partial threshold)")
+        if not loss_decreased:
+            blocking.append("loss_decreased=False, expected True")
+        if unrecovered_jump_fail:
+            blocking.append(f"unrecovered_jump_fail: iter2_jump_ratio={iter2_jump_ratio:.2f}")
+        if not growth_occurred:
+            blocking.append(f"n_gaussians_final ({n_final}) <= n_gaussians_initial ({n_initial})")
+        if not growth_controlled and growth_occurred:
+            if max_hit:
+                blocking.append("max_gaussians_hit=True, growth not controlled")
+            elif growth_ratio > GROWTH_CONTROLLED_MAX_RATIO:
+                blocking.append(f"growth_ratio {growth_ratio:.2f} > {GROWTH_CONTROLLED_MAX_RATIO} (uncontrolled)")
+        if not clone_happened:
+            blocking.append("total_cloned = 0, no clones produced")
+        if not logs_complete:
+            blocking.append(f"logs incomplete: {logs_note}")
+        gate["blocking_reasons"] = blocking
+        gate["recommendation"] = (
+            "M4-A2-1 controlled negative. Metrics do not meet partial thresholds or "
+            "densification did not execute as expected. "
+            "Do NOT close SERV-CT line positively. Expert intervention required."
         )
 
     return gate
@@ -216,7 +294,7 @@ def main():
         print(f"FAIL: iter1/iter2 metrics not found in {metrics_path}")
         sys.exit(2)
 
-    gate = compute_gate(fm, early, merged_cfg)
+    gate = compute_gate(fm, early, merged_cfg, run_dir=run_dir)
     exit_code = 0 if gate["status"] == "FULL_SUCCESS" else 1
     _write_and_report(gate, run_dir, args.output_dir)
     sys.exit(exit_code)
@@ -235,10 +313,12 @@ def _write_and_report(gate, run_dir, output_dir_arg):
     print(f"  growth_occurred: {gate.get('growth_occurred', 'N/A')} "
           f"({gate.get('n_gaussians_initial', 0)} -> {gate.get('n_gaussians_final', 0)}, "
           f"ratio {gate.get('gaussian_growth_ratio', 0):.3f})")
+    print(f"  growth_controlled: {gate.get('growth_controlled', 'N/A')}")
     print(f"  clone_happened: {gate.get('clone_happened', 'N/A')} "
           f"(cloned={gate.get('total_cloned', 0)}, pruned={gate.get('total_pruned', 0)}, "
           f"steps={gate.get('densification_steps_count', 0)})")
     print(f"  max_gaussians_hit: {gate.get('max_gaussians_hit', False)}")
+    print(f"  logs_complete: {gate.get('logs_complete', 'N/A')}")
     print(f"  loss_decreased: {gate.get('loss_decreased', 'N/A')}")
     jr = gate.get("iter2_jump_ratio")
     if jr is not None:
@@ -246,12 +326,11 @@ def _write_and_report(gate, run_dir, output_dir_arg):
         print(f"  unrecovered_jump_fail: {gate.get('unrecovered_jump_fail', 'N/A')}")
     psnr = gate.get("val_psnr", "N/A")
     if psnr != "N/A":
-        print(f"  val_PSNR: {psnr:.2f} dB (threshold {PSNR_THRESHOLD} dB, "
-              f"pass={gate.get('psnr_pass', False)})")
+        print(f"  val_PSNR: {psnr:.2f} dB (full >= {PSNR_FULL_SUCCESS}, partial >= {PSNR_PARTIAL_POSITIVE})")
     rmse = gate.get("val_depth_rmse_m_raw", "N/A")
     if rmse != "N/A":
-        print(f"  val_depth_RMSE: {rmse:.4f} m (threshold {DEPTH_RMSE_THRESHOLD} m, "
-              f"pass={gate.get('depth_rmse_pass', False)})")
+        print(f"  val_depth_RMSE: {rmse:.4f} m (full <= {DEPTH_RMSE_FULL_SUCCESS}, "
+              f"partial <= {DEPTH_RMSE_PARTIAL_POSITIVE})")
 
     if gate.get("blocking_reasons"):
         for r in gate["blocking_reasons"]:

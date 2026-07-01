@@ -55,6 +55,7 @@ def select_densification_candidates(
     sample_id: str = "",
     frame_id: str = "",
     split: str = "train",
+    iter_idx: int = 0,
 ) -> DensificationSelection:
     H, W = rendered_depth.shape
     device = rendered_depth.device
@@ -201,8 +202,9 @@ def select_densification_candidates(
         # Step 8: Clone offset (per-Gaussian scale mean)
         scale_mean = gaussians.scales[clone_indices].mean(dim=-1)
         offset_magnitude = config.clone_offset_scale_factor * scale_mean
-        torch.manual_seed(config.seed)
-        direction = torch.randn(n_to_clone, 3, device=device)
+        generator = torch.Generator(device=device)
+        generator.manual_seed(config.seed + iter_idx)
+        direction = torch.randn(n_to_clone, 3, device=device, generator=generator)
         direction = direction / direction.norm(dim=-1, keepdim=True).clamp(min=1e-8)
         offset = offset_magnitude.unsqueeze(-1) * direction
 

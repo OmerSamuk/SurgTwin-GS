@@ -232,7 +232,8 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             return result, context
         return result
 
-    def _densification_step(self, iter_idx: int, context: dict) -> DensificationSelection:
+    def _densification_step(self, iter_idx: int, context: dict,
+                            clip_active_ratio: float = 0.0) -> DensificationSelection:
         config = self.unc_config
         entry = context["entry"]
         camera = context["camera"]
@@ -275,10 +276,8 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 sample_id=sample_id,
                 frame_id=entry.get("frame_id", str(iter_idx)),
                 split="train",
+                iter_idx=iter_idx,
             )
-
-        if selection.n_cloned == 0 and selection.n_pruned == 0:
-            return selection
 
         n_before = self.gaussians.num_gaussians()
 
@@ -289,7 +288,6 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 self.init_scales = self.init_scales[keep_mask].detach().clone().requires_grad_(True)
             old_n = n_before
             new_n = self.gaussians.num_gaussians()
-            pruned = old_n - new_n
 
             offset = torch.zeros(self.gaussians.num_gaussians(), device=self.device, dtype=torch.long)
             new_indices = torch.arange(new_n, device=self.device)
@@ -305,7 +303,8 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 cloned_init = self.init_scales[remapped_clone].detach().clone().requires_grad_(True)
                 self.init_scales = torch.cat([self.init_scales, cloned_init], dim=0)
 
-        self.optimizer = self._build_optimizer()
+        if selection.n_cloned > 0 or selection.n_pruned > 0:
+            self.optimizer = self._build_optimizer()
 
         n_after = self.gaussians.num_gaussians()
         log_entry = {
@@ -325,7 +324,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             "opacity_std": round(selection.opacity_std, 6),
             "opacity_min": round(selection.opacity_min, 6),
             "opacity_max": round(selection.opacity_max, 6),
-            "clip_active_ratio": 0.0,
+            "clip_active_ratio": round(clip_active_ratio, 4),
             "max_gaussians_hit": selection.max_gaussians_hit,
             "clone_offset_mode": selection.clone_offset_mode,
             "clone_offset_scale": selection.clone_offset_scale,
@@ -526,6 +525,22 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             clip_active_ratio = clip_active_count / clip_total_count if clip_total_count > 0 else 0.0
             metrics["clip_active_ratio"] = round(clip_active_ratio, 4)
 
+            # Densification step (M4-A2-1): train_step → optimizer.step → post-step clamp → densification → log
+            if (config.enable_densification
+                    and config.densify_from_iter <= i <= config.densify_until_iter
+                    and i % config.densify_every == 0):
+                dens_sel = self._densification_step(i, context, clip_active_ratio=clip_active_ratio)
+                dens_steps_count += 1
+                total_cloned += dens_sel.n_cloned
+                total_pruned += dens_sel.n_pruned
+                if dens_sel.max_gaussians_hit:
+                    max_gaussians_hit = True
+                step["n_gaussians"] = self.gaussians.num_gaussians()
+                metrics["n_gaussians"] = step["n_gaussians"]
+                metrics["densification_step_applied"] = True
+            else:
+                metrics["densification_step_applied"] = False
+
             self.metrics_logger.log(metrics)
 
             if i == 1:
@@ -566,23 +581,6 @@ class UncertaintyTrainer(DepthGuidedTrainer):
 
             if i % config.ckpt_every == 0:
                 self.save(i)
-
-            # Densification step (M4-A2-1): train_step → optimizer.step → post-step clamp → densification
-            if (config.enable_densification
-                    and config.densify_from_iter <= i <= config.densify_until_iter
-                    and i % config.densify_every == 0):
-                dens_sel = self._densification_step(i, context)
-                dens_steps_count += 1
-                total_cloned += dens_sel.n_cloned
-                total_pruned += dens_sel.n_pruned
-                if dens_sel.max_gaussians_hit:
-                    max_gaussians_hit = True
-                # Update step metrics to reflect post-densification state
-                step["n_gaussians"] = self.gaussians.num_gaussians()
-                metrics["n_gaussians"] = step["n_gaussians"]
-                metrics["densification_step_applied"] = True
-            else:
-                metrics["densification_step_applied"] = False
 
         final_metrics["final_loss_total"] = step["loss_total"]
         final_metrics["final_photo_loss_weighted"] = step["photo_loss_weighted"]
