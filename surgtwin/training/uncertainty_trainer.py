@@ -304,7 +304,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 self.init_scales = torch.cat([self.init_scales, cloned_init], dim=0)
 
         if selection.n_cloned > 0 or selection.n_pruned > 0:
-            self.optimizer = self._build_optimizer()
+            self._build_optimizer()
 
         n_after = self.gaussians.num_gaussians()
         log_entry = {
