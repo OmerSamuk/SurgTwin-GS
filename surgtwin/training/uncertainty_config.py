@@ -15,6 +15,22 @@ class UncertaintyConfig:
     lr_colors: float = 2.5e-3
     init_num_points: int = 20000
     enable_densification: bool = False
+    # Densification schedule
+    densify_from_iter: int = 200
+    densify_every: int = 100
+    densify_until_iter: int = 800
+    # Densification thresholds
+    densify_depth_residual_threshold: float = 0.02
+    densify_w_photo_threshold: float = 0.3
+    # Clone bounds
+    densify_max_clone_per_step: int = 5000
+    densify_max_clone_fraction: float = 0.15
+    densify_max_gaussians: int = 50000
+    # Prune
+    prune_min_opacity: float = 0.005
+    max_prune_fraction_per_step: float = 0.05
+    # Clone offset
+    clone_offset_scale_factor: float = 0.25
     seed: int = 42
     backend: str = "gsplat"
 

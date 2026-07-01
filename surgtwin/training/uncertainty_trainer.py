@@ -18,6 +18,7 @@ from surgtwin.losses.photometric import photometric_l1
 from surgtwin.losses.uncertainty_weighted import uncertainty_weighted_photometric_l1
 from surgtwin.masks.io import load_specular_mask, mask_coverage
 from surgtwin.training.config import BaselineConfig
+from surgtwin.training.densification import select_densification_candidates, DensificationSelection
 from surgtwin.training.depth_guided_config import DepthGuidedConfig
 from surgtwin.training.depth_guided_trainer import DepthGuidedTrainer, _verify_m2a_artifact, _save_depth_color
 from surgtwin.training.uncertainty_config import UncertaintyConfig
@@ -128,7 +129,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         self.init_scales = self.gaussians.scales.data.clone().detach()
         self._init_warmup()
 
-    def train_step(self, iter_idx: int) -> Dict[str, float]:
+    def train_step(self, iter_idx: int, return_context: bool = False):
         if self.gaussians is None or self.optimizer is None:
             raise RuntimeError("Trainer not set up. Call setup() first.")
 
@@ -222,7 +223,125 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             if val is not None:
                 result[key] = val
 
+        if return_context:
+            context = {
+                "entry": entry,
+                "camera": camera,
+                "sample_id": entry.get("sample_id", "unknown"),
+            }
+            return result, context
         return result
+
+    def _densification_step(self, iter_idx: int, context: dict) -> DensificationSelection:
+        config = self.unc_config
+        entry = context["entry"]
+        camera = context["camera"]
+        sample_id = context["sample_id"]
+
+        gt_rgb = _load_rgb(entry["left_rgb_path"]).to(self.device)
+        gt_depth = load_servct_depth(Path(entry["left_depth_path"])).to(self.device)
+
+        with torch.no_grad():
+            out = self.backend.render(
+                gaussians=self.gaussians,
+                camera=camera,
+                image_height=entry["height"],
+                image_width=entry["width"],
+                render_depth=True,
+            )
+
+            mask = self._get_mask_for_entry(entry) if config.variant in ("h2", "h3") else None
+
+            residual = compute_photo_residual(out.rgb[..., :3], gt_rgb, detach_pred=True)
+            scale = compute_p95_scale(residual)
+            u_photo = compute_u_photo(residual, scale)
+            if mask is not None:
+                w_photo = compute_w_photo_with_mask(
+                    u_photo, mask, alpha=config.alpha,
+                    w_min=config.w_photo_min, mask_boost=config.mask_boost,
+                )
+            else:
+                w_photo = compute_w_photo(u_photo, alpha=config.alpha, w_min=config.w_photo_min)
+
+            selection = select_densification_candidates(
+                gaussians=self.gaussians,
+                rendered_depth=out.depth,
+                gt_depth=gt_depth,
+                rendered_rgb=out.rgb[..., :3],
+                gt_rgb=gt_rgb,
+                w_photo=w_photo,
+                camera=camera,
+                config=config,
+                sample_id=sample_id,
+                frame_id=entry.get("frame_id", str(iter_idx)),
+                split="train",
+            )
+
+        if selection.n_cloned == 0 and selection.n_pruned == 0:
+            return selection
+
+        n_before = self.gaussians.num_gaussians()
+
+        if selection.n_pruned > 0:
+            keep_mask = selection.prune_mask
+            self.gaussians.remove_gaussians(keep_mask)
+            if hasattr(self, "init_scales") and self.init_scales is not None:
+                self.init_scales = self.init_scales[keep_mask].detach().clone().requires_grad_(True)
+            old_n = n_before
+            new_n = self.gaussians.num_gaussians()
+            pruned = old_n - new_n
+
+            offset = torch.zeros(self.gaussians.num_gaussians(), device=self.device, dtype=torch.long)
+            new_indices = torch.arange(new_n, device=self.device)
+            old_to_new = torch.zeros(old_n, dtype=torch.long, device=self.device)
+            old_to_new[keep_mask] = new_indices
+            remapped_clone = old_to_new[selection.clone_indices]
+        else:
+            remapped_clone = selection.clone_indices
+
+        if selection.n_cloned > 0:
+            self.gaussians.clone_gaussians(remapped_clone, selection.clone_offsets)
+            if hasattr(self, "init_scales") and self.init_scales is not None:
+                cloned_init = self.init_scales[remapped_clone].detach().clone().requires_grad_(True)
+                self.init_scales = torch.cat([self.init_scales, cloned_init], dim=0)
+
+        self.optimizer = self._build_optimizer()
+
+        n_after = self.gaussians.num_gaussians()
+        log_entry = {
+            "iter": iter_idx,
+            "n_gaussians_before": n_before,
+            "n_gaussians_after": n_after,
+            "n_cloned": selection.n_cloned,
+            "n_pruned": selection.n_pruned,
+            "selected_candidate_count": selection.selected_candidate_count,
+            "selected_candidate_ratio": round(selection.selected_candidate_ratio, 6),
+            "selected_mean_depth_residual": round(selection.selected_mean_depth_residual, 6),
+            "selected_p50_depth_residual": round(selection.selected_p50_depth_residual, 6),
+            "selected_p90_depth_residual": round(selection.selected_p90_depth_residual, 6),
+            "selected_mean_w_photo": round(selection.selected_mean_w_photo, 6),
+            "selected_p10_w_photo": round(selection.selected_p10_w_photo, 6),
+            "opacity_mean": round(selection.opacity_mean, 6),
+            "opacity_std": round(selection.opacity_std, 6),
+            "opacity_min": round(selection.opacity_min, 6),
+            "opacity_max": round(selection.opacity_max, 6),
+            "clip_active_ratio": 0.0,
+            "max_gaussians_hit": selection.max_gaussians_hit,
+            "clone_offset_mode": selection.clone_offset_mode,
+            "clone_offset_scale": selection.clone_offset_scale,
+            "mapping_mode": selection.mapping_mode,
+            "trigger_reason": selection.trigger_reason,
+            "sample_id": selection.sample_id,
+            "frame_id": selection.frame_id,
+            "split": selection.split,
+            "densification_entry_mode": selection.densification_entry_mode,
+        }
+        dens_log_path = self.output_dir / "densification_log.jsonl"
+        dens_log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(dens_log_path, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
+
+        return selection
 
     def _run_val(self, iter_idx: int) -> Dict[str, float]:
         self.gaussians.means.requires_grad_(False)
@@ -354,11 +473,19 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         final_metrics = {}
         clip_active_count = 0
         clip_total_count = 0
+        n_gaussians_initial = self.gaussians.num_gaussians()
+        dens_steps_count = 0
+        total_cloned = 0
+        total_pruned = 0
+        max_gaussians_hit = False
 
         for i in range(1, config.iterations + 1):
             self._apply_warmup(i)
             t0 = time.time()
-            step = self.train_step(i)
+            if config.enable_densification:
+                step, context = self.train_step(i, return_context=True)
+            else:
+                step = self.train_step(i)
             step_time = time.time() - t0
 
             vram = 0.0
@@ -440,6 +567,23 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             if i % config.ckpt_every == 0:
                 self.save(i)
 
+            # Densification step (M4-A2-1): train_step → optimizer.step → post-step clamp → densification
+            if (config.enable_densification
+                    and config.densify_from_iter <= i <= config.densify_until_iter
+                    and i % config.densify_every == 0):
+                dens_sel = self._densification_step(i, context)
+                dens_steps_count += 1
+                total_cloned += dens_sel.n_cloned
+                total_pruned += dens_sel.n_pruned
+                if dens_sel.max_gaussians_hit:
+                    max_gaussians_hit = True
+                # Update step metrics to reflect post-densification state
+                step["n_gaussians"] = self.gaussians.num_gaussians()
+                metrics["n_gaussians"] = step["n_gaussians"]
+                metrics["densification_step_applied"] = True
+            else:
+                metrics["densification_step_applied"] = False
+
         final_metrics["final_loss_total"] = step["loss_total"]
         final_metrics["final_photo_loss_weighted"] = step["photo_loss_weighted"]
         final_metrics["n_gaussians"] = step["n_gaussians"]
@@ -458,6 +602,15 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         final_metrics["clip_active_ratio"] = round(clip_active_ratio, 4)
         final_metrics["warmup_iters"] = config.warmup_iters
         final_metrics["enable_densification"] = config.enable_densification
+        final_metrics["n_gaussians_initial"] = n_gaussians_initial
+        final_metrics["n_gaussians_final"] = self.gaussians.num_gaussians()
+        final_metrics["gaussian_growth_ratio"] = round(
+            self.gaussians.num_gaussians() / max(1, n_gaussians_initial), 6
+        )
+        final_metrics["densification_steps_count"] = dens_steps_count
+        final_metrics["total_cloned"] = total_cloned
+        final_metrics["total_pruned"] = total_pruned
+        final_metrics["max_gaussians_hit"] = max_gaussians_hit
         final_metrics["depth_semantics"] = "metric_meters"
         final_metrics["normalization_mode"] = "p95_detached"
         final_metrics["run_mode"] = getattr(self.unc_config, "run_mode", "production")
@@ -563,7 +716,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             if fm.get("mask_interpretation"):
                 lines.append(f"- interpretation: {fm['mask_interpretation']}")
         lines.append("")
-        lines.extend([
+        lines += [
             "## 6. Outputs",
             "- config.json: yes",
             "- environment.json: yes",
@@ -574,14 +727,32 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             "- uncertainty/: yes",
             "- final_metrics.json: yes",
             "",
-            "## 7. Known Limitations",
-            "- No density control (M4)",
-            f"- Fixed {fm.get('n_gaussians', 20000)} Gaussians, densification off",
+            '## 7. Densification (M4-A2-1)',
+            f'- enable_densification: {fm.get("enable_densification", False)}',
+        ]
+        if fm.get("enable_densification"):
+            lines += [
+                f'- n_gaussians_initial: {fm.get("n_gaussians_initial", "N/A")}',
+                f'- n_gaussians_final: {fm.get("n_gaussians_final", "N/A")}',
+                f'- gaussian_growth_ratio: {fm.get("gaussian_growth_ratio", "N/A")}',
+                f'- densification_steps_count: {fm.get("densification_steps_count", 0)}',
+                f'- total_cloned: {fm.get("total_cloned", 0)}',
+                f'- total_pruned: {fm.get("total_pruned", 0)}',
+                f'- max_gaussians_hit: {fm.get("max_gaussians_hit", False)}',
+                '- mapping_mode: projection_based_approximate',
+                '- Future improvement: true renderer contribution-aware densification requires exposing gsplat visibility/radii/meta outputs.',
+            ]
+        else:
+            lines += [f"- Fixed {fm.get('n_gaussians', 20000)} Gaussians, densification off"]
+        lines += [
             "- Learned mapper not included",
             "",
             "## 8. Next Steps",
-            "- Milestone 4: multi-criteria density control",
-        ])
+        ]
+        if fm.get("enable_densification"):
+            lines += ["- M4-A2-1 evaluation: evaluate_m4_a2_1.py"]
+        else:
+            lines += ["- Milestone 4: multi-criteria density control"]
         report_path = self.output_dir / "report.md"
         report_path.write_text("\n".join(lines) + "\n")
 
@@ -651,10 +822,42 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 cv2.applyColorMap(_norm_depth(error_map), cv2.COLORMAP_VIRIDIS),
                 w_color,
             ]
+
+            # Densification artifacts (M4-A2-1)
+            if self.unc_config.enable_densification:
+                depth_residual = np.abs(pred_d_np - gt_d_np)
+                valid_mask = (gt_d_np > self.unc_config.depth_near_m) & (gt_d_np < self.unc_config.depth_far_m) & np.isfinite(gt_d_np)
+                candidate_mask = np.zeros_like(depth_residual, dtype=np.uint8)
+                if valid_mask.any():
+                    candidate_mask[(depth_residual > self.unc_config.densify_depth_residual_threshold) & (w_np > self.unc_config.densify_w_photo_threshold) & valid_mask] = 255
+                cand_color = cv2.applyColorMap(candidate_mask, cv2.COLORMAP_BONE)
+                panels.append(cand_color)
+
+                from surgtwin.cameras.projection import project_points_to_image
+                K_np = camera.K.cpu().numpy()
+                w2c_np = camera.w2c.cpu().numpy()
+                means_np = self.gaussians.means.detach().cpu().numpy()
+                uv_hom = w2c_np[:3, :3] @ means_np.T + w2c_np[:3, 3:4]
+                z_cam = uv_hom[2]
+                uv = uv_hom[:2] / np.where(z_cam > 0, z_cam, 1e-8)
+                u = np.round(uv[0]).astype(int)
+                v = np.round(uv[1]).astype(int)
+                in_img = (u >= 0) & (u < entry["width"]) & (v >= 0) & (v < entry["height"]) & (z_cam > 0).squeeze()
+                overlay = np.zeros((entry["height"], entry["width"], 3), dtype=np.uint8)
+                overlay[v[in_img], u[in_img]] = [0, 255, 0]
+                panels.append(overlay)
+
             h, w = gt_rgb_np.shape[:2]
-            top = np.hstack([panels[0], panels[1]])
-            mid = np.hstack([panels[2], panels[3]])
-            bottom = np.hstack([panels[4], panels[5]])
-            full = np.vstack([top, mid, bottom])
+            if len(panels) == 8:
+                row1 = np.hstack([panels[0], panels[1]])
+                row2 = np.hstack([panels[2], panels[3]])
+                row3 = np.hstack([panels[4], panels[5]])
+                row4 = np.hstack([panels[6], panels[7]])
+                full = np.vstack([row1, row2, row3, row4])
+            else:
+                top = np.hstack([panels[0], panels[1]])
+                mid = np.hstack([panels[2], panels[3]])
+                bottom = np.hstack([panels[4], panels[5]])
+                full = np.vstack([top, mid, bottom])
             panel_path = panel_dir / f"val_{entry['sample_id']}_panel.png"
             cv2.imwrite(str(panel_path), full)

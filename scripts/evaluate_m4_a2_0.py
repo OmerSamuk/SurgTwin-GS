@@ -109,6 +109,8 @@ def compute_gate(fm, early_metrics, config, run_dir, allow_ablation=False):
         "allow_ablation": allow_ablation,
         "gate_eligible_run_mode": fm.get("run_mode", "unknown"),
         "m2a_gate_confirmed": fm.get("m2a_gate", "unknown"),
+        "gate_profile": "M4-A2-0_ABLATION_GRAD2" if allow_ablation else "M4-A2-0_CANONICAL",
+        "canonical_gate": not allow_ablation,
         "iter1_loss": iter1_loss,
         "iter2_loss": iter2_loss,
         "iter2_jump_ratio": round(iter2_jump_ratio, 4) if iter2_jump_ratio is not None else None,
@@ -173,17 +175,29 @@ def compute_gate(fm, early_metrics, config, run_dir, allow_ablation=False):
         if loss_decreased and not unrecovered_jump_fail and (psnr_marginal or depth_marginal):
             gate["status"] = "MARGINAL_FAIL"
             gate["blocking_reasons"] = marginal_failures
-            gate["marginal"] = {
-                "psnr_marginal": psnr_marginal,
-                "depth_rmse_marginal": depth_marginal,
-                "ablation_config": {"max_grad_norm": 2.0},
-                "ablation_output_dir": str(run_dir) + "_abl_grad2",
-            }
-            gate["recommendation"] = (
-                "M4-A2-0 marginal fail. Run one ablation with max_grad_norm=2.0 "
-                f"(output: {gate['marginal']['ablation_output_dir']}). "
-                "Ablation will NOT be a canonical gate (expert review required)."
-            )
+            if allow_ablation:
+                gate["marginal"] = {
+                    "psnr_marginal": psnr_marginal,
+                    "depth_rmse_marginal": depth_marginal,
+                    "ablation_config": None,
+                    "ablation_output_dir": None,
+                }
+                gate["recommendation"] = (
+                    "Ablation completed. No further max_grad_norm ablation is recommended. "
+                    "Send result to expert review."
+                )
+            else:
+                gate["marginal"] = {
+                    "psnr_marginal": psnr_marginal,
+                    "depth_rmse_marginal": depth_marginal,
+                    "ablation_config": {"max_grad_norm": 2.0},
+                    "ablation_output_dir": str(run_dir) + "_abl_grad2",
+                }
+                gate["recommendation"] = (
+                    "M4-A2-0 marginal fail. Run one ablation with max_grad_norm=2.0 "
+                    f"(output: {gate['marginal']['ablation_output_dir']}). "
+                    "Ablation will NOT be a canonical gate (expert review required)."
+                )
         else:
             gate["status"] = "CLEAR_FAIL"
             gate["blocking_reasons"] = marginal_failures
@@ -300,7 +314,7 @@ def _write_and_report(gate, run_dir, output_dir_arg):
             print(f"    X {r}")
     print(f"\n  Recommendation: {gate.get('recommendation', 'N/A')}")
     print(f"  Gate artifact: {gate_path.resolve()}")
-    if "marginal" in gate:
+    if "marginal" in gate and gate["marginal"].get("ablation_output_dir"):
         print(f"  Ablation target: {gate['marginal']['ablation_output_dir']}")
 
 

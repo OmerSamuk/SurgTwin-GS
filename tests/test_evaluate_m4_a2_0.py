@@ -274,6 +274,32 @@ def _write_run_dir(base, config, final_metrics, early_losses):
     (base / "metrics.jsonl").write_text(lines)
 
 
+# ---------------------------------------------------------------------------
+# compute_gate — ablation no repeat recommendation (Phase 0 bug fix)
+# ---------------------------------------------------------------------------
+
+
+def test_ablation_no_repeat_recommendation():
+    """allow_ablation=True → recommendation says 'No further ablation'."""
+    fm = _make_final_metrics({"val_psnr": 19.4, "val_depth_rmse_m_raw": 0.0383})
+    early = _make_early_metrics([0.036] * 10)
+    gate = compute_gate(fm, early, _VALID_CONFIG, _dummy_run_dir(), allow_ablation=True)
+    assert gate["status"] == "MARGINAL_FAIL"
+    assert "No further" in gate["recommendation"]
+    assert "ablation_output_dir" not in gate["marginal"] or gate["marginal"]["ablation_output_dir"] is None
+    assert gate.get("gate_profile") == "M4-A2-0_ABLATION_GRAD2"
+    assert gate.get("canonical_gate") is False
+
+
+def test_gate_profile_fields():
+    """Canonical run → gate_profile=M4-A2-0_CANONICAL, canonical_gate=true."""
+    fm = _make_final_metrics()
+    early = _make_early_metrics([0.036] * 10)
+    gate = compute_gate(fm, early, _VALID_CONFIG, _dummy_run_dir(), allow_ablation=False)
+    assert gate.get("gate_profile") == "M4-A2-0_CANONICAL"
+    assert gate.get("canonical_gate") is True
+
+
 def test_invalid_config_cli_writes_gate_and_exits_2():
     """50K config → evaluator writes gate JSON with INVALID_FOR_GATE, exit code 2."""
     cfg = dict(_VALID_CONFIG)

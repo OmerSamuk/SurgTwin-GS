@@ -131,6 +131,30 @@ def main():
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
                         help="Max gradient norm for clipping")
 
+    # --- Densification CLI args (M4-A2-1) ---
+    parser.add_argument("--enable_densification", action="store_true",
+                        help="Enable depth-aware densification (M4-A2-1)")
+    parser.add_argument("--densify_from_iter", type=int, default=200,
+                        help="First iteration for densification step")
+    parser.add_argument("--densify_every", type=int, default=100,
+                        help="Densification step interval")
+    parser.add_argument("--densify_until_iter", type=int, default=800,
+                        help="Last iteration for densification step")
+    parser.add_argument("--densify_depth_residual_threshold", type=float, default=0.02,
+                        help="Depth residual threshold (meters) for candidate selection")
+    parser.add_argument("--densify_w_photo_threshold", type=float, default=0.3,
+                        help="w_photo threshold for candidate selection")
+    parser.add_argument("--densify_max_clone_per_step", type=int, default=5000,
+                        help="Max clones per densification step")
+    parser.add_argument("--densify_max_clone_fraction", type=float, default=0.15,
+                        help="Max clone fraction relative to current N")
+    parser.add_argument("--densify_max_gaussians", type=int, default=50000,
+                        help="Hard cap on total Gaussian count")
+    parser.add_argument("--prune_min_opacity", type=float, default=0.005,
+                        help="Opacity threshold (sigmoid space) for prune candidates")
+    parser.add_argument("--max_prune_fraction_per_step", type=float, default=0.05,
+                        help="Max fraction of Gaussians pruned per step")
+
     args = parser.parse_args()
 
     # --- M2-A pre-flight gate (Directives D2 + D6) ---
@@ -180,6 +204,17 @@ def main():
         depth_semantics_artifact_path=args.depth_semantics_artifact,
         clip_grad_norm=not args.no_clip_grad,
         max_grad_norm=args.max_grad_norm,
+        enable_densification=args.enable_densification,
+        densify_from_iter=args.densify_from_iter,
+        densify_every=args.densify_every,
+        densify_until_iter=args.densify_until_iter,
+        densify_depth_residual_threshold=args.densify_depth_residual_threshold,
+        densify_w_photo_threshold=args.densify_w_photo_threshold,
+        densify_max_clone_per_step=args.densify_max_clone_per_step,
+        densify_max_clone_fraction=args.densify_max_clone_fraction,
+        densify_max_gaussians=args.densify_max_gaussians,
+        prune_min_opacity=args.prune_min_opacity,
+        max_prune_fraction_per_step=args.max_prune_fraction_per_step,
     )
 
     backend = GsplatBackend()
