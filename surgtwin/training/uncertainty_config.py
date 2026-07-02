@@ -50,3 +50,6 @@ class UncertaintyConfig:
     mask_dir: Optional[str] = None
     depth_semantics_artifact_path: Optional[str] = None
     save_uncertainty_maps_every: int = 100
+
+    # Optimizer state migration (clone damping, §4 tandem movement)
+    clone_means_exp_avg_scale: float = 0.5

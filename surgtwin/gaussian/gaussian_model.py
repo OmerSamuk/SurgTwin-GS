@@ -49,10 +49,15 @@ class GaussianModel:
             ),
         )
 
-    def clone_gaussians(self, indices: torch.Tensor, offsets: torch.Tensor) -> None:
+    def clone_gaussians(self, indices: torch.Tensor, offsets: torch.Tensor,
+                        return_parent_mapping: bool = False):
         N_selected = indices.shape[0]
         if N_selected == 0:
+            if return_parent_mapping:
+                return torch.tensor([], device=indices.device, dtype=torch.long)
             return
+        n_before = self.means.shape[0]
+        parent_mapping = torch.arange(n_before, n_before + N_selected, device=indices.device, dtype=torch.long)
         self.means = torch.cat([self.means, self.means[indices] + offsets], dim=0)
         self.scales = torch.cat([self.scales, self.scales[indices]], dim=0)
         self.quats = torch.cat([self.quats, self.quats[indices]], dim=0)
@@ -64,6 +69,8 @@ class GaussianModel:
         for field in ("means", "scales", "quats", "opacities", "colors", "reliability_logits"):
             t = getattr(self, field)
             setattr(self, field, t.detach().clone().requires_grad_(True))
+        if return_parent_mapping:
+            return parent_mapping
 
     def remove_gaussians(self, keep_mask: torch.Tensor) -> None:
         self.means = self.means[keep_mask]
