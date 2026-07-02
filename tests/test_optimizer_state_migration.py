@@ -33,7 +33,7 @@ def _make_optimizer(gaussians, lr=1e-3):
     ])
 
 
-def _migrate_optimizer_state(g, old_state_dict, clone_parent_map, keep_mask, remapped_clone, config):
+def _migrate_optimizer_state(g, old_state_dict, clone_parent_map, keep_mask, remapped_clone, config, pre_prune_clone_indices=None):
     """Rebuild optimizer and migrate Adam states from old_state_dict."""
     param_keys = ["means", "scales", "quats", "opacities", "colors"]
     gd = {k: v for k, v in g.__dict__.items() if isinstance(v, torch.Tensor)}
@@ -74,7 +74,7 @@ def _migrate_optimizer_state(g, old_state_dict, clone_parent_map, keep_mask, rem
         if clone_parent_map is not None and clone_parent_map.numel() > 0:
             n_clone = clone_parent_map.shape[0]
             if n_clone > 0:
-                parent_idx = remapped_clone[:n_clone]
+                parent_idx = (pre_prune_clone_indices if pre_prune_clone_indices is not None else remapped_clone)[:n_clone]
                 parent_avg = old_exp_avg[parent_idx]
                 parent_avg_sq = old_exp_avg_sq[parent_idx]
                 clone_start = n_kept
@@ -251,3 +251,52 @@ def test_parent_clone_do_not_share_state_tensor_storage():
     new_exp_avg = new_sd["state"][new_pid]["exp_avg"]
     new_storage_ptr = new_exp_avg[0].untyped_storage().data_ptr()
     assert new_storage_ptr != old_storage_ptr, "New state should not alias old state storage"
+
+
+def test_state_migration_prune_and_clone_same_step_correct_parent():
+    g = _make_gaussians(20)
+    opt = _make_optimizer(g)
+    opt.zero_grad()
+    for name in ("means", "scales", "quats", "opacities", "colors"):
+        getattr(g, name).grad = torch.randn_like(getattr(g, name))
+    opt.step()
+    old_state = opt.state_dict()
+    old_pid = sorted(old_state["state"].keys())[0]
+    parent_exp_avg_pre = old_state["state"][old_pid]["exp_avg"].clone()
+    # Prune: keep 0..9, 15..19 (remove 10..14)
+    keep_mask = torch.cat([torch.ones(10, dtype=torch.bool), torch.zeros(5, dtype=torch.bool), torch.ones(5, dtype=torch.bool)])
+    g.remove_gaussians(keep_mask)
+    assert g.num_gaussians() == 15
+    old_n = 20
+    new_n = 15
+    new_indices = torch.arange(new_n)
+    old_to_new = torch.zeros(old_n, dtype=torch.long)
+    old_to_new[keep_mask] = new_indices
+    # Pre-prune clone indices: [0, 15] (both in the kept set)
+    pre_prune_clone_idx = torch.tensor([0, 15])
+    # Post-prune compact indices: old 0->new 0, old 15->new 10
+    remapped_clone = old_to_new[pre_prune_clone_idx]
+    # Verify the remapping
+    assert remapped_clone.tolist() == [0, 10], "remapped_clone must differ from pre-prune indices"
+    n_clone = 2
+    offsets = torch.randn(n_clone, 3, device=g.means.device)
+    g.clone_gaussians(remapped_clone, offsets)
+    assert g.num_gaussians() == 17
+    config = _dense_config(clone_means_exp_avg_scale=0.5)
+    new_opt = _migrate_optimizer_state(
+        g, old_state, remapped_clone, keep_mask, remapped_clone, config,
+        pre_prune_clone_indices=pre_prune_clone_idx,
+    )
+    new_sd = new_opt.state_dict()
+    new_pid = sorted(new_sd["state"].keys())[0]
+    new_exp_avg = new_sd["state"][new_pid]["exp_avg"]
+    assert new_exp_avg.shape[0] == 17
+    # Clone at post-prune index 10 = pre-prune index 15 (remapped from old 15)
+    # old_exp_avg[pre_prune_clone_idx[0]=0] should be parent
+    # old_exp_avg[pre_prune_clone_idx[1]=15] should be parent
+    clone0 = new_exp_avg[-2]
+    parent0_pre = parent_exp_avg_pre[0] * 0.5
+    assert torch.allclose(clone0, parent0_pre), "Clone 0 should use parent from pre-prune index 0"
+    clone1 = new_exp_avg[-1]
+    parent1_pre = parent_exp_avg_pre[15] * 0.5
+    assert torch.allclose(clone1, parent1_pre), "Clone 1 should use parent from pre-prune index 15"

@@ -232,7 +232,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             return result, context
         return result
 
-    def _migrate_optimizer_state(self, old_opt_state, clone_parent_map, keep_mask, remapped_clone) -> None:
+    def _migrate_optimizer_state(self, old_opt_state, clone_parent_map, keep_mask, remapped_clone, pre_prune_clone_indices=None) -> None:
         try:
             param_keys = ["means", "scales", "quats", "opacities", "colors"]
             gd = {k: v for k, v in self.gaussians.__dict__.items() if isinstance(v, torch.Tensor)}
@@ -270,7 +270,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 if clone_parent_map is not None and clone_parent_map.numel() > 0:
                     n_clone = clone_parent_map.shape[0]
                     if n_clone > 0:
-                        parent_idx = remapped_clone[:n_clone]
+                        parent_idx = (pre_prune_clone_indices if pre_prune_clone_indices is not None else remapped_clone)[:n_clone]
                         parent_avg = old_exp_avg[parent_idx]
                         parent_avg_sq = old_exp_avg_sq[parent_idx]
                         clone_start = n_kept
@@ -367,7 +367,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 self.init_scales = torch.cat([self.init_scales, cloned_init], dim=0)
 
         if selection.n_cloned > 0 or selection.n_pruned > 0:
-            self._migrate_optimizer_state(old_opt_state, clone_parent_map, keep_mask, remapped_clone)
+            self._migrate_optimizer_state(old_opt_state, clone_parent_map, keep_mask, remapped_clone, pre_prune_clone_indices=selection.clone_indices)
 
         n_after = self.gaussians.num_gaussians()
         log_entry = {
