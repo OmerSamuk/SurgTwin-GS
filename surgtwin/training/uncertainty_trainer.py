@@ -22,6 +22,8 @@ from surgtwin.training.densification import select_densification_candidates, Den
 from surgtwin.training.depth_guided_config import DepthGuidedConfig
 from surgtwin.training.depth_guided_trainer import DepthGuidedTrainer, _verify_m2a_artifact, _save_depth_color
 from surgtwin.training.uncertainty_config import UncertaintyConfig
+from surgtwin.training.checkpointing import save_checkpoint
+from surgtwin.training.logging_utils import write_json
 from surgtwin.uncertainty.signals import compute_photo_residual, compute_p95_scale, compute_u_photo, compute_w_photo, compute_w_photo_with_mask
 
 
@@ -491,10 +493,11 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             else:
                 improved = metric_value > self._best_val["metric_value"]
             if not improved and metric_value == self._best_val["metric_value"]:
-                if self.unc_config.best_val_tiebreaker_mode == "max":
-                    improved = tie_value > self._best_val.get("tie_value", float("-inf"))
-                else:
-                    improved = tie_value < self._best_val.get("tie_value", float("inf"))
+                if tie_value is not None:
+                    if self.unc_config.best_val_tiebreaker_mode == "max":
+                        improved = tie_value > self._best_val.get("tie_value", float("-inf"))
+                    else:
+                        improved = tie_value < self._best_val.get("tie_value", float("inf"))
         if improved:
             self._best_val = {
                 "iter": iter_idx,
@@ -504,7 +507,6 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             }
             ckpt_dir = self.output_dir / "checkpoints"
             ckpt_path = ckpt_dir / "best_val.pt"
-            from surgtwin.training.checkpointing import save_checkpoint
             save_checkpoint(
                 path=ckpt_path,
                 gaussians=self.gaussians,
@@ -516,7 +518,9 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 extra={
                     "best_val_metric": self.unc_config.best_val_metric,
                     "best_val_metric_mode": self.unc_config.best_val_metric_mode,
+                    "best_val_tiebreaker": self.unc_config.best_val_tiebreaker,
                     "best_val_score": metric_value,
+                    "best_val_tiebreaker_value": tie_value,
                     "val_metrics": val_metrics,
                 },
             )
@@ -539,7 +543,6 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 best_meta["densification_steps_count"] = self._dens_steps_count
                 best_meta["total_cloned"] = getattr(self, "_total_cloned", 0)
                 best_meta["total_pruned"] = getattr(self, "_total_pruned", 0)
-            write_json = __import__("surgtwin.training.logging_utils", fromlist=["write_json"]).write_json
             write_json(self.output_dir / "best_val_metrics.json", best_meta)
 
     def fit(self) -> Dict:
