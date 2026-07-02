@@ -72,7 +72,9 @@ def _delta(base, val, higher_is_better: bool = True) -> str:
         return ""
     diff = val - base
     pct = (diff / abs(base)) * 100 if base != 0 else 0.0
-    arrow = "▲" if ((higher_is_better and diff > 0) or (not higher_is_better and diff < 0)) else "▼"
+    if higher_is_better is None:
+        return f" {diff:+.4f} ({pct:+.1f}%)"
+    arrow = "+" if ((higher_is_better and diff > 0) or (not higher_is_better and diff < 0)) else "-"
     return f" {arrow} {diff:+.4f} ({pct:+.1f}%)"
 
 
@@ -130,7 +132,7 @@ def _build_comparison_table(m3_row: Dict, m4_row: Dict, vram: Optional[Dict]) ->
             "key": key,
             "m3_h1": m3v,
             "m4_a1": m4v,
-            "delta": _delta(m3v, m4v, higher_better=None) if m4v is not None and m3v is not None else "",
+            "delta": _delta(m3v, m4v, higher_is_better=None) if m4v is not None and m3v is not None else "",
         })
 
     if vram:
@@ -233,7 +235,7 @@ def _compute_gate(m3_row: Dict, m4_row: Dict, vram: Optional[Dict],
         results["relative_improvement_pct"] = None
         results["partial_positive"] = False
 
-    # M4-A1b trigger (depth_RMSE ≤ 0.0335 or ≥8% relative improvement)
+    # M4-A1b trigger (depth_RMSE <= 0.0335 or >=8% relative improvement)
     trigger_a1b = False
     if m4_rmse is not None:
         if m4_rmse <= 0.0335:
@@ -297,7 +299,7 @@ def _recommendation(gate: Dict) -> str:
         return "Proceed to M4-A2 (multi-criteria density control)."
     if status == "PARTIAL POSITIVE":
         if gate.get("m4_a1b_trigger"):
-            return "Run M4-A1b (100K) — 50K shows meaningful improvement."
+            return "Run M4-A1b (100K) -- 50K shows meaningful improvement."
         return "Partial improvement but below A1b trigger threshold. Proceed to M4-A2 low-expectation."
     if "VRAM FAIL" in status:
         return "VRAM exceeded safe limit. Investigate memory usage before continuing."
@@ -316,8 +318,8 @@ def _format_table_markdown(comparison: List[Dict], gate: Dict, m3_run_id: str, m
         f"",
         f"## Metrics",
         f"",
-        f"| Metric | M3-H1 | M4-A1 | Δ |",
-        f"|--------|-------|-------|---|",
+        f"| Metric | M3-H1 | M4-A1 | Delta |",
+        f"|--------|-------|-------|-------|",
     ]
 
     for row in comparison:
@@ -332,17 +334,17 @@ def _format_table_markdown(comparison: List[Dict], gate: Dict, m3_run_id: str, m
         f"",
         f"| Check | Result | Details |",
         f"|-------|--------|---------|",
-        f"| PSNR ≥ {_fmt(PSNR_THRESHOLD)} dB | {'✅' if gate.get('psnr_pass') else '❌'} | {_fmt(gate.get('psnr_value'))} dB |",
-        f"| Depth RMSE ≤ {_fmt(DEPTH_RMSE_THRESHOLD, 3)} m | {'✅' if gate.get('depth_rmse_pass') else '❌'} | {_fmt(gate.get('depth_rmse_value'), 6)} m |",
-        f"| n_gaussians == 50000 | {'✅' if gate.get('n_gaussians_ok') else '❌'} | {gate.get('n_gaussians', 'N/A')} |",
-        f"| Improved over M3-H1 | {'✅' if gate.get('improved_over_m3_h1') else '❌'} | baseline {_fmt(gate.get('m3_h1_depth_rmse'), 6)} m |",
+        f"| PSNR >= {_fmt(PSNR_THRESHOLD)} dB | {'PASS' if gate.get('psnr_pass') else 'FAIL'} | {_fmt(gate.get('psnr_value'))} dB |",
+        f"| Depth RMSE <= {_fmt(DEPTH_RMSE_THRESHOLD, 3)} m | {'PASS' if gate.get('depth_rmse_pass') else 'FAIL'} | {_fmt(gate.get('depth_rmse_value'), 6)} m |",
+        f"| n_gaussians == 50000 | {'PASS' if gate.get('n_gaussians_ok') else 'FAIL'} | {gate.get('n_gaussians', 'N/A')} |",
+        f"| Improved over M3-H1 | {'YES' if gate.get('improved_over_m3_h1') else 'NO'} | baseline {_fmt(gate.get('m3_h1_depth_rmse'), 6)} m |",
         f"| VRAM tier | {gate.get('vram_tier', 'N/A')} | {_fmt(gate.get('vram_info', {}).get('max_vram_gb')) if gate.get('vram_info') else 'N/A'} GB peak |",
-        f"| Manifest sha256 match | {'✅' if gate.get('manifest_sha256_match') else '❌'} | {'match' if gate.get('manifest_sha256_match') else 'MISMATCH'} |",
-        f"| loss_decreased | {'✅' if gate.get('loss_decreased') else '❌'} | {gate.get('loss_decreased_value', 'N/A')} |",
-        f"| enable_densification == false | {'✅' if gate.get('densification_off') else '❌'} | {gate.get('enable_densification', 'N/A')} |",
-        f"| depth_semantics == metric_meters | {'✅' if gate.get('depth_semantics_ok') else '❌'} | {gate.get('depth_semantics', 'N/A')} |",
-        f"| w_photo_mean in [0.15, 0.95] | {'✅' if gate.get('w_photo_mean_in_range') else '❌'} | {_fmt(gate.get('w_photo_mean'))} |",
-        f"| fraction_at_min < 0.90 | {'✅' if gate.get('fraction_at_min_ok') else '❌'} | {_fmt(gate.get('fraction_w_photo_at_min'))} |",
+        f"| Manifest sha256 match | {'PASS' if gate.get('manifest_sha256_match') else 'FAIL'} | {'match' if gate.get('manifest_sha256_match') else 'MISMATCH'} |",
+        f"| loss_decreased | {'PASS' if gate.get('loss_decreased') else 'FAIL'} | {gate.get('loss_decreased_value', 'N/A')} |",
+        f"| enable_densification == false | {'PASS' if gate.get('densification_off') else 'FAIL'} | {gate.get('enable_densification', 'N/A')} |",
+        f"| depth_semantics == metric_meters | {'PASS' if gate.get('depth_semantics_ok') else 'FAIL'} | {gate.get('depth_semantics', 'N/A')} |",
+        f"| w_photo_mean in [0.15, 0.95] | {'PASS' if gate.get('w_photo_mean_in_range') else 'FAIL'} | {_fmt(gate.get('w_photo_mean'))} |",
+        f"| fraction_at_min < 0.90 | {'PASS' if gate.get('fraction_at_min_ok') else 'FAIL'} | {_fmt(gate.get('fraction_w_photo_at_min'))} |",
     ])
 
     if gate.get("blocking_reasons"):
@@ -351,14 +353,14 @@ def _format_table_markdown(comparison: List[Dict], gate: Dict, m3_run_id: str, m
             f"### Blocking Issues",
         ])
         for reason in gate["blocking_reasons"]:
-            lines.append(f"- ❌ {reason}")
+            lines.append(f"- FAIL: {reason}")
 
     lines.extend([
         f"",
         f"**Recommendation:** {gate.get('recommendation', 'N/A')}",
         f"",
         f"### M4-A1b Trigger",
-        f"- depth_RMSE ≤ 0.0335m or ≥8% relative improvement: **{'YES' if gate.get('m4_a1b_trigger') else 'NO'}**",
+        f"- depth_RMSE <= 0.0335m or >=8% relative improvement: **{'YES' if gate.get('m4_a1b_trigger') else 'NO'}**",
         f"- Relative improvement: {_fmt(gate.get('relative_improvement_pct', 0), 2)}%",
     ])
 
@@ -421,7 +423,7 @@ def main():
     print(f"  Label: {gate.get('label', 'N/A')}")
     if gate.get("blocking_reasons"):
         for reason in gate["blocking_reasons"]:
-            print(f"    ✗ {reason}")
+            print(f"    X {reason}")
     print(f"  PSNR: {_fmt(gate.get('psnr_value'))} dB (threshold {_fmt(PSNR_THRESHOLD)} dB)")
     print(f"  Depth RMSE: {_fmt(gate.get('depth_rmse_value'), 6)} m (threshold {_fmt(DEPTH_RMSE_THRESHOLD, 3)} m)")
     print(f"  A1b trigger: {'YES' if gate.get('m4_a1b_trigger') else 'NO'}")

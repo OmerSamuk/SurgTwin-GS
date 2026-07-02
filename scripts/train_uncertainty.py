@@ -93,6 +93,13 @@ def main():
     parser.add_argument("--log_every", type=int, default=10)
     parser.add_argument("--ckpt_every", type=int, default=500)
 
+    parser.add_argument("--lr_means", type=float, default=1e-3)
+    parser.add_argument("--lr_scales", type=float, default=1e-5)
+    parser.add_argument("--lr_quats", type=float, default=1e-3)
+    parser.add_argument("--lr_opacities", type=float, default=5e-2)
+    parser.add_argument("--lr_colors", type=float, default=2.5e-3)
+    parser.add_argument("--warmup_iters", type=int, default=0)
+
     parser.add_argument("--variant", type=str, default="h1",
                         choices=["h1", "h2", "h3"],
                         help="M3 variant: h1=residual only, h2=mask-aware, h3=low depth")
@@ -123,6 +130,32 @@ def main():
                         help="Disable gradient clipping")
     parser.add_argument("--max_grad_norm", type=float, default=1.0,
                         help="Max gradient norm for clipping")
+
+    # --- Densification CLI args (M4-A2-1) ---
+    parser.add_argument("--enable_densification", action="store_true",
+                        help="Enable depth-aware densification (M4-A2-1)")
+    parser.add_argument("--densify_from_iter", type=int, default=200,
+                        help="First iteration for densification step")
+    parser.add_argument("--densify_every", type=int, default=100,
+                        help="Densification step interval")
+    parser.add_argument("--densify_until_iter", type=int, default=800,
+                        help="Last iteration for densification step")
+    parser.add_argument("--densify_depth_residual_threshold", type=float, default=0.02,
+                        help="Depth residual threshold (meters) for candidate selection")
+    parser.add_argument("--densify_w_photo_threshold", type=float, default=0.3,
+                        help="w_photo threshold for candidate selection")
+    parser.add_argument("--densify_max_clone_per_step", type=int, default=5000,
+                        help="Max clones per densification step")
+    parser.add_argument("--densify_max_clone_fraction", type=float, default=0.15,
+                        help="Max clone fraction relative to current N")
+    parser.add_argument("--densify_max_gaussians", type=int, default=50000,
+                        help="Hard cap on total Gaussian count")
+    parser.add_argument("--prune_min_opacity", type=float, default=0.005,
+                        help="Opacity threshold (sigmoid space) for prune candidates")
+    parser.add_argument("--max_prune_fraction_per_step", type=float, default=0.05,
+                        help="Max fraction of Gaussians pruned per step")
+    parser.add_argument("--clone_offset_scale_factor", type=float, default=0.25,
+                        help="Clone offset magnitude as fraction of per-Gaussian scale mean")
 
     args = parser.parse_args()
 
@@ -157,6 +190,12 @@ def main():
         val_every=args.val_every,
         log_every=args.log_every,
         ckpt_every=args.ckpt_every,
+        lr_means=args.lr_means,
+        lr_scales=args.lr_scales,
+        lr_quats=args.lr_quats,
+        lr_opacities=args.lr_opacities,
+        lr_colors=args.lr_colors,
+        warmup_iters=args.warmup_iters,
         variant=args.variant,
         lambda_depth=args.lambda_depth,
         lambda_reg=args.lambda_reg,
@@ -167,6 +206,18 @@ def main():
         depth_semantics_artifact_path=args.depth_semantics_artifact,
         clip_grad_norm=not args.no_clip_grad,
         max_grad_norm=args.max_grad_norm,
+        enable_densification=args.enable_densification,
+        densify_from_iter=args.densify_from_iter,
+        densify_every=args.densify_every,
+        densify_until_iter=args.densify_until_iter,
+        densify_depth_residual_threshold=args.densify_depth_residual_threshold,
+        densify_w_photo_threshold=args.densify_w_photo_threshold,
+        densify_max_clone_per_step=args.densify_max_clone_per_step,
+        densify_max_clone_fraction=args.densify_max_clone_fraction,
+        densify_max_gaussians=args.densify_max_gaussians,
+        prune_min_opacity=args.prune_min_opacity,
+        max_prune_fraction_per_step=args.max_prune_fraction_per_step,
+        clone_offset_scale_factor=args.clone_offset_scale_factor,
     )
 
     backend = GsplatBackend()

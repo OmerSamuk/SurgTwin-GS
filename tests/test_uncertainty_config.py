@@ -13,6 +13,7 @@ def test_default_values():
     assert c.enable_densification == False
     assert c.clip_grad_norm == True
     assert c.max_grad_norm == 1.0
+    assert c.warmup_iters == 0
 
 
 def test_frozen():
