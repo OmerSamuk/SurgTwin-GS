@@ -95,6 +95,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         self.unc_config = config
         self.mask_cache: Dict[str, Optional[torch.Tensor]] = {}
         self._warmup_base_lrs: Optional[List[float]] = None
+        self._best_val: Optional[Dict] = None
 
     def _init_warmup(self) -> None:
         if self.unc_config.warmup_iters > 0 and self.optimizer is not None:
@@ -466,6 +467,81 @@ class UncertaintyTrainer(DepthGuidedTrainer):
 
         return result
 
+    def _resolve_val_metric(self, metric_name: str) -> str:
+        mapping = {
+            "depth_rmse": "val_depth_rmse_m_raw",
+            "psnr": "val_psnr",
+        }
+        return mapping.get(metric_name, metric_name)
+
+    def _maybe_save_best_val(self, iter_idx: int, val_metrics: Dict) -> None:
+        if not self.unc_config.best_val_enabled:
+            return
+        metric_key = self._resolve_val_metric(self.unc_config.best_val_metric)
+        tie_key = self._resolve_val_metric(self.unc_config.best_val_tiebreaker)
+        metric_value = val_metrics.get(metric_key)
+        tie_value = val_metrics.get(tie_key)
+        if metric_value is None:
+            return
+        if self._best_val is None:
+            improved = True
+        else:
+            if self.unc_config.best_val_metric_mode == "min":
+                improved = metric_value < self._best_val["metric_value"]
+            else:
+                improved = metric_value > self._best_val["metric_value"]
+            if not improved and metric_value == self._best_val["metric_value"]:
+                if self.unc_config.best_val_tiebreaker_mode == "max":
+                    improved = tie_value > self._best_val.get("tie_value", float("-inf"))
+                else:
+                    improved = tie_value < self._best_val.get("tie_value", float("inf"))
+        if improved:
+            self._best_val = {
+                "iter": iter_idx,
+                "metric_value": metric_value,
+                "tie_value": tie_value,
+                "val_metrics": val_metrics,
+            }
+            ckpt_dir = self.output_dir / "checkpoints"
+            ckpt_path = ckpt_dir / "best_val.pt"
+            from surgtwin.training.checkpointing import save_checkpoint
+            save_checkpoint(
+                path=ckpt_path,
+                gaussians=self.gaussians,
+                optimizer_state_dict=self.optimizer.state_dict(),
+                iteration=iter_idx,
+                config=asdict(self.unc_config),
+                backend_name=self.unc_config.backend,
+                seed=self.unc_config.seed,
+                extra={
+                    "best_val_metric": self.unc_config.best_val_metric,
+                    "best_val_metric_mode": self.unc_config.best_val_metric_mode,
+                    "best_val_score": metric_value,
+                    "val_metrics": val_metrics,
+                },
+            )
+            best_meta = {
+                "best_iter": iter_idx,
+                "best_val_metric": self.unc_config.best_val_metric,
+                "best_val_metric_mode": self.unc_config.best_val_metric_mode,
+                "best_val_metric_value": metric_value,
+                "best_val_tiebreaker": self.unc_config.best_val_tiebreaker,
+                "best_val_tiebreaker_value": tie_value,
+                "val_psnr": val_metrics.get("val_psnr"),
+                "val_depth_rmse_m_raw": val_metrics.get("val_depth_rmse_m_raw"),
+                "val_ssim": val_metrics.get("val_ssim"),
+                "val_lpips": val_metrics.get("val_lpips"),
+                "val_abs_rel": val_metrics.get("val_abs_rel"),
+                "n_gaussians": self.gaussians.num_gaussians(),
+                "enable_densification": self.unc_config.enable_densification,
+            }
+            if hasattr(self, "_dens_steps_count"):
+                best_meta["densification_steps_count"] = self._dens_steps_count
+                best_meta["total_cloned"] = getattr(self, "_total_cloned", 0)
+                best_meta["total_pruned"] = getattr(self, "_total_pruned", 0)
+            write_json = __import__("surgtwin.training.logging_utils", fromlist=["write_json"]).write_json
+            write_json(self.output_dir / "best_val_metrics.json", best_meta)
+
     def fit(self) -> Dict:
         self.setup()
         config = self.unc_config
@@ -473,9 +549,9 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         clip_active_count = 0
         clip_total_count = 0
         n_gaussians_initial = self.gaussians.num_gaussians()
-        dens_steps_count = 0
-        total_cloned = 0
-        total_pruned = 0
+        self._dens_steps_count = 0
+        self._total_cloned = 0
+        self._total_pruned = 0
         max_gaussians_hit = False
 
         for i in range(1, config.iterations + 1):
@@ -530,9 +606,9 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                     and config.densify_from_iter <= i <= config.densify_until_iter
                     and i % config.densify_every == 0):
                 dens_sel = self._densification_step(i, context, clip_active_ratio=clip_active_ratio)
-                dens_steps_count += 1
-                total_cloned += dens_sel.n_cloned
-                total_pruned += dens_sel.n_pruned
+                self._dens_steps_count += 1
+                self._total_cloned += dens_sel.n_cloned
+                self._total_pruned += dens_sel.n_pruned
                 if dens_sel.max_gaussians_hit:
                     max_gaussians_hit = True
                 step["n_gaussians"] = self.gaussians.num_gaussians()
@@ -578,6 +654,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                 print(f"VAL iter {i}: psnr={val_metrics['val_psnr']:.2f}  "
                       f"ssim={val_metrics['val_ssim']:.4f}  "
                       f"lpips={lpips_str}{depth_str}{w_str}")
+                self._maybe_save_best_val(i, val_metrics)
 
             if i % config.ckpt_every == 0:
                 self.save(i)
@@ -586,6 +663,7 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         final_metrics["final_photo_loss_weighted"] = step["photo_loss_weighted"]
         final_metrics["n_gaussians"] = step["n_gaussians"]
         val_metrics = self._run_val(config.iterations)
+        self._maybe_save_best_val(config.iterations, val_metrics)
         final_metrics.update(val_metrics)
         final_metrics["loss_decreased"] = final_metrics["final_loss_total"] < final_metrics["initial_loss_total"]
         final_metrics["iterations"] = config.iterations
@@ -616,9 +694,9 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         final_metrics["gaussian_growth_ratio"] = round(
             self.gaussians.num_gaussians() / max(1, n_gaussians_initial), 6
         )
-        final_metrics["densification_steps_count"] = dens_steps_count
-        final_metrics["total_cloned"] = total_cloned
-        final_metrics["total_pruned"] = total_pruned
+        final_metrics["densification_steps_count"] = self._dens_steps_count
+        final_metrics["total_cloned"] = self._total_cloned
+        final_metrics["total_pruned"] = self._total_pruned
         final_metrics["max_gaussians_hit"] = max_gaussians_hit
         final_metrics["depth_semantics"] = "metric_meters"
         final_metrics["normalization_mode"] = "p95_detached"
@@ -635,6 +713,11 @@ class UncertaintyTrainer(DepthGuidedTrainer):
                     "to attribute gains to mask-aware weighting."
                 )
 
+        if self._best_val is not None:
+            final_metrics["best_val_iter"] = self._best_val["iter"]
+            final_metrics["best_val_metric"] = self.unc_config.best_val_metric
+            final_metrics["best_val_metric_value"] = self._best_val["metric_value"]
+            final_metrics["best_val_tiebreaker_value"] = self._best_val.get("tie_value")
         write_json = __import__("surgtwin.training.logging_utils", fromlist=["write_json"]).write_json
         write_json(self.output_dir / "final_metrics.json", final_metrics)
         self.save(config.iterations)

@@ -50,3 +50,10 @@ class UncertaintyConfig:
     mask_dir: Optional[str] = None
     depth_semantics_artifact_path: Optional[str] = None
     save_uncertainty_maps_every: int = 100
+
+    # Best validation checkpoint
+    best_val_enabled: bool = True
+    best_val_metric: str = "depth_rmse"
+    best_val_tiebreaker: str = "psnr"
+    best_val_metric_mode: str = "min"
+    best_val_tiebreaker_mode: str = "max"
