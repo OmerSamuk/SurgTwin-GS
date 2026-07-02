@@ -235,6 +235,64 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             return result, context
         return result
 
+    def _migrate_optimizer_state(self, old_opt_state, clone_parent_map, keep_mask, remapped_clone, pre_prune_clone_indices=None) -> None:
+        try:
+            param_keys = ["means", "scales", "quats", "opacities", "colors"]
+            gd = {k: v for k, v in self.gaussians.__dict__.items() if isinstance(v, torch.Tensor)}
+            if old_opt_state is None or not old_opt_state.get("state"):
+                self._build_optimizer()
+                return
+            old_state = old_opt_state["state"]
+            self._build_optimizer()
+            for pg_idx, field in enumerate(param_keys):
+                if pg_idx >= len(self.optimizer.param_groups):
+                    break
+                pg = self.optimizer.param_groups[pg_idx]
+                if not pg["params"]:
+                    continue
+                p = pg["params"][0]
+                old_pid = sorted(old_state.keys())[pg_idx] if pg_idx < len(old_state) else None
+                if old_pid is None:
+                    continue
+                old_s = old_state[old_pid]
+                old_exp_avg = old_s.get("exp_avg")
+                old_exp_avg_sq = old_s.get("exp_avg_sq")
+                if old_exp_avg is None:
+                    continue
+                new_exp_avg = torch.zeros_like(p)
+                new_exp_avg_sq = torch.zeros_like(p)
+                if keep_mask is not None:
+                    old_kept_avg = old_exp_avg[keep_mask]
+                    old_kept_avg_sq = old_exp_avg_sq[keep_mask]
+                else:
+                    old_kept_avg = old_exp_avg
+                    old_kept_avg_sq = old_exp_avg_sq
+                n_kept = old_kept_avg.shape[0]
+                new_exp_avg[:n_kept] = old_kept_avg
+                new_exp_avg_sq[:n_kept] = old_kept_avg_sq
+                if clone_parent_map is not None and clone_parent_map.numel() > 0:
+                    n_clone = clone_parent_map.shape[0]
+                    if n_clone > 0:
+                        parent_idx = (pre_prune_clone_indices if pre_prune_clone_indices is not None else remapped_clone)[:n_clone]
+                        parent_avg = old_exp_avg[parent_idx]
+                        parent_avg_sq = old_exp_avg_sq[parent_idx]
+                        clone_start = n_kept
+                        clone_end = n_kept + n_clone
+                        if field == "means":
+                            new_exp_avg[clone_start:clone_end] = parent_avg * self.unc_config.clone_means_exp_avg_scale
+                        else:
+                            new_exp_avg[clone_start:clone_end] = parent_avg
+                        new_exp_avg_sq[clone_start:clone_end] = parent_avg_sq
+                self.optimizer.state[p] = {
+                    "step": old_s.get("step", 0),
+                    "exp_avg": new_exp_avg,
+                    "exp_avg_sq": new_exp_avg_sq,
+                }
+        except Exception as e:
+            import warnings
+            warnings.warn(f"Optimizer state migration failed ({e}), falling back to rebuild from scratch.")
+            self._build_optimizer()
+
     def _densification_step(self, iter_idx: int, context: dict,
                             clip_active_ratio: float = 0.0) -> DensificationSelection:
         config = self.unc_config
@@ -283,6 +341,8 @@ class UncertaintyTrainer(DepthGuidedTrainer):
             )
 
         n_before = self.gaussians.num_gaussians()
+        keep_mask = None
+        old_opt_state = self.optimizer.state_dict() if self.optimizer is not None else None
 
         if selection.n_pruned > 0:
             keep_mask = selection.prune_mask
@@ -300,14 +360,17 @@ class UncertaintyTrainer(DepthGuidedTrainer):
         else:
             remapped_clone = selection.clone_indices
 
+        clone_parent_map = None
         if selection.n_cloned > 0:
-            self.gaussians.clone_gaussians(remapped_clone, selection.clone_offsets)
+            clone_parent_map = self.gaussians.clone_gaussians(
+                remapped_clone, selection.clone_offsets, return_parent_mapping=True
+            )
             if hasattr(self, "init_scales") and self.init_scales is not None:
                 cloned_init = self.init_scales[remapped_clone].detach().clone().requires_grad_(True)
                 self.init_scales = torch.cat([self.init_scales, cloned_init], dim=0)
 
         if selection.n_cloned > 0 or selection.n_pruned > 0:
-            self._build_optimizer()
+            self._migrate_optimizer_state(old_opt_state, clone_parent_map, keep_mask, remapped_clone, pre_prune_clone_indices=selection.clone_indices)
 
         n_after = self.gaussians.num_gaussians()
         log_entry = {

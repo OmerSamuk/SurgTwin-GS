@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Optional
 
-_SUPPORTED_VAL_METRICS = ("depth_rmse", "psnr")
+_SUPPORTED_VAL_METRICS = ("depth_rmse", "psnr", "weighted_score")
 
 
 @dataclass(frozen=True)
@@ -60,10 +60,12 @@ class UncertaintyConfig:
     best_val_metric_mode: str = "min"
     best_val_tiebreaker_mode: str = "max"
 
+    # Optimizer state migration (clone damping, §4 tandem movement)
+    clone_means_exp_avg_scale: float = 0.5
+
     def __post_init__(self):
         if self.best_val_enabled and self.best_val_metric not in _SUPPORTED_VAL_METRICS:
             raise ValueError(
                 f"Unsupported best_val_metric '{self.best_val_metric}'. "
-                f"Supported: {_SUPPORTED_VAL_METRICS}. "
-                f"'weighted_score' is planned for M5."
+                f"Supported: {_SUPPORTED_VAL_METRICS}."
             )
