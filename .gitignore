@@ -6,9 +6,10 @@ dist/
 build/
 .pytest_cache/
 
-# Generated data (SERV-CT synthetic, manifests)
+# Generated data (SERV-CT synthetic, StereoMIS raw, manifests)
 data/manifest.jsonl
 data/raw/
+data/external/
 data/processed/
 
 # All training outputs (checkpoints, renders, metrics)
