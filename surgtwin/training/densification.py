@@ -29,6 +29,13 @@ class DensificationSelection:
     opacity_min: float
     opacity_max: float
     max_gaussians_hit: bool
+    selected_min_w_photo: float = 0.0
+    selected_p01_w_photo: float = 0.0
+    selected_p05_w_photo: float = 0.0
+    w_photo_threshold: float = 0.3
+    w_photo_leak_count: int = 0
+    w_photo_near_threshold_count: int = 0
+    w_photo_threshold_margin_min: float = 0.0
     clone_offset_mode: str = "random_unit_vector"
     clone_offset_scale: float = 0.25
     mapping_mode: str = "projection_based_approximate"
@@ -128,6 +135,7 @@ def select_densification_candidates(
                 opacity_min=float(sigmoid_opacity.min().item()),
                 opacity_max=float(sigmoid_opacity.max().item()),
                 max_gaussians_hit=False,
+                w_photo_threshold=w_photo_thresh,
                 sample_id=sample_id,
                 frame_id=frame_id,
                 split=split,
@@ -185,6 +193,7 @@ def select_densification_candidates(
                 opacity_min=float(sigmoid_opacity.min().item()),
                 opacity_max=float(sigmoid_opacity.max().item()),
                 max_gaussians_hit=max_gaussians_hit,
+                w_photo_threshold=w_photo_thresh,
                 sample_id=sample_id,
                 frame_id=frame_id,
                 split=split,
@@ -219,6 +228,18 @@ def select_densification_candidates(
         p10_idx = min(n_to_clone - 1, int(n_to_clone * 0.1))
         p10_w = sorted_w[p10_idx].item() if n_to_clone > 0 else 0.0
 
+        # w_photo audit fields (expert-answer-18 §5)
+        min_w = float(selected_w_photos.min().item()) if n_to_clone > 0 else 0.0
+        p01_idx = min(n_to_clone - 1, int(n_to_clone * 0.01))
+        p01_w = sorted_w[p01_idx].item() if n_to_clone > 0 else 0.0
+        p05_idx = min(n_to_clone - 1, int(n_to_clone * 0.05))
+        p05_w = sorted_w[p05_idx].item() if n_to_clone > 0 else 0.0
+        leak_count = int((selected_w_photos <= w_photo_thresh).sum().item()) if n_to_clone > 0 else 0
+        near_threshold_count = int(
+            ((selected_w_photos > w_photo_thresh) & (selected_w_photos <= w_photo_thresh + 0.05)).sum().item()
+        ) if n_to_clone > 0 else 0
+        margin_min = float((selected_w_photos - w_photo_thresh).min().item()) if n_to_clone > 0 else 0.0
+
     return DensificationSelection(
         clone_indices=clone_indices,
         clone_offsets=offset,
@@ -237,6 +258,13 @@ def select_densification_candidates(
         opacity_min=float(sigmoid_opacity.min().item()),
         opacity_max=float(sigmoid_opacity.max().item()),
         max_gaussians_hit=max_gaussians_hit,
+        selected_min_w_photo=min_w,
+        selected_p01_w_photo=p01_w,
+        selected_p05_w_photo=p05_w,
+        w_photo_threshold=w_photo_thresh,
+        w_photo_leak_count=leak_count,
+        w_photo_near_threshold_count=near_threshold_count,
+        w_photo_threshold_margin_min=margin_min,
         sample_id=sample_id,
         frame_id=frame_id,
         split=split,

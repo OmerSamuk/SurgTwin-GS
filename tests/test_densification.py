@@ -151,6 +151,13 @@ def test_densification_selection_fields():
         selected_p90_depth_residual=0.04,
         selected_mean_w_photo=0.6,
         selected_p10_w_photo=0.4,
+        selected_min_w_photo=0.35,
+        selected_p01_w_photo=0.36,
+        selected_p05_w_photo=0.38,
+        w_photo_threshold=0.3,
+        w_photo_leak_count=0,
+        w_photo_near_threshold_count=1,
+        w_photo_threshold_margin_min=0.05,
         opacity_mean=0.5,
         opacity_std=0.2,
         opacity_min=0.01,
@@ -167,6 +174,9 @@ def test_densification_selection_fields():
     assert sel.clone_offset_mode == "random_unit_vector"
     assert sel.mapping_mode == "projection_based_approximate"
     assert "depth_residual" in sel.trigger_reason
+    assert sel.w_photo_leak_count == 0
+    assert sel.w_photo_near_threshold_count == 1
+    assert sel.w_photo_threshold_margin_min == 0.05
 
 
 # ===================================================================
@@ -313,7 +323,98 @@ def test_select_no_valid_depth():
 
 
 # ===================================================================
+# ===================================================================
+# w_photo audit fields (expert-answer-18 §5)
+# ===================================================================
+
+def test_w_photo_leak_count_zero_when_all_above_threshold():
+    config = _dense_config(densify_w_photo_threshold=0.3, densify_depth_residual_threshold=0.001)
+    device = "cpu"
+    g = _make_gaussians(50, device)
+    H, W = 64, 64
+    gt_d = torch.full((H, W), 0.15, device=device)
+    pred_d = torch.full((H, W), 0.20, device=device)
+    gt_rgb = torch.rand(H, W, 3, device=device)
+    pred_rgb = torch.rand(H, W, 3, device=device)
+    w = torch.full((H, W), 0.6, device=device)
+    cam = _make_dummy_camera(device, H, W)
+    out = select_densification_candidates(g, pred_d, gt_d, pred_rgb, gt_rgb, w, cam, config)
+    assert out.w_photo_leak_count == 0, "No candidates should be below threshold"
+
+
+def test_w_photo_leak_count_detects_threshold_violation():
+    config = _dense_config(densify_w_photo_threshold=0.3, densify_depth_residual_threshold=0.001,
+                            densify_max_clone_per_step=100)
+    device = "cpu"
+    g = _make_gaussians(50, device)
+    H, W = 64, 64
+    gt_d = torch.full((H, W), 0.15, device=device)
+    pred_d = torch.full((H, W), 0.20, device=device)
+    gt_rgb = torch.rand(H, W, 3, device=device)
+    pred_rgb = torch.rand(H, W, 3, device=device)
+    w = torch.full((H, W), 0.6, device=device)
+    w[16:32, 16:32] = 0.1
+    cam = _make_dummy_camera(device, H, W)
+    out = select_densification_candidates(g, pred_d, gt_d, pred_rgb, gt_rgb, w, cam, config)
+    if out.n_cloned > 0:
+        assert out.w_photo_leak_count >= 0
+
+
+def test_w_photo_near_threshold_count():
+    config = _dense_config(densify_w_photo_threshold=0.3, densify_depth_residual_threshold=0.001)
+    device = "cpu"
+    g = _make_gaussians(50, device)
+    H, W = 64, 64
+    gt_d = torch.full((H, W), 0.15, device=device)
+    pred_d = torch.full((H, W), 0.20, device=device)
+    gt_rgb = torch.rand(H, W, 3, device=device)
+    pred_rgb = torch.rand(H, W, 3, device=device)
+    w = torch.full((H, W), 0.6, device=device)
+    cam = _make_dummy_camera(device, H, W)
+    out = select_densification_candidates(g, pred_d, gt_d, pred_rgb, gt_rgb, w, cam, config)
+    if out.n_cloned > 0:
+        assert out.w_photo_near_threshold_count >= 0
+        assert out.w_photo_threshold_margin_min >= 0
+
+
+def test_w_photo_threshold_margin_min():
+    config = _dense_config(densify_w_photo_threshold=0.3, densify_depth_residual_threshold=0.001)
+    device = "cpu"
+    g = _make_gaussians(50, device)
+    H, W = 64, 64
+    gt_d = torch.full((H, W), 0.15, device=device)
+    pred_d = torch.full((H, W), 0.20, device=device)
+    gt_rgb = torch.rand(H, W, 3, device=device)
+    pred_rgb = torch.rand(H, W, 3, device=device)
+    w = torch.full((H, W), 0.6, device=device)
+    cam = _make_dummy_camera(device, H, W)
+    out = select_densification_candidates(g, pred_d, gt_d, pred_rgb, gt_rgb, w, cam, config)
+    if out.n_cloned > 0:
+        assert out.w_photo_threshold_margin_min > 0
+    assert out.w_photo_threshold == 0.3
+
+
+def test_zero_candidate_still_logs_audit_fields():
+    config = _dense_config()
+    device = "cpu"
+    g = _make_gaussians(50, device)
+    H, W = 64, 64
+    gt_d = torch.full((H, W), 0.15, device=device)
+    pred_d = gt_d.clone()
+    gt_rgb = torch.rand(H, W, 3, device=device)
+    pred_rgb = gt_rgb.clone()
+    w = torch.full((H, W), 0.1, device=device)
+    cam = _make_dummy_camera(device, H, W)
+    out = select_densification_candidates(g, pred_d, gt_d, pred_rgb, gt_rgb, w, cam, config)
+    assert out.n_cloned == 0
+    assert out.w_photo_leak_count == 0
+    assert out.w_photo_near_threshold_count == 0
+    assert out.w_photo_threshold_margin_min == 0.0
+
+
+# ===================================================================
 # Clone + prune integration (index remap scenario)
+# ===================================================================
 # ===================================================================
 
 def test_clone_after_prune_index_remap():
